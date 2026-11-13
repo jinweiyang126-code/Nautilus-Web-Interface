@@ -249,6 +249,8 @@ VITE_API_KEY=
 
 See [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) for full VPS / Docker / systemd instructions.
 
+See [docs/ALIYUN_BT_DEPLOYMENT_CN.md](docs/ALIYUN_BT_DEPLOYMENT_CN.md) for Alibaba Cloud ECS + BT Panel (宝塔) deployment (`nt.abcyjw.me`).
+
 See [docs/CLOUDFLARE_PAGES_SETUP.md](docs/CLOUDFLARE_PAGES_SETUP.md) for Cloudflare Pages frontend deployment.
 
 A fully automated deployment script is also available:

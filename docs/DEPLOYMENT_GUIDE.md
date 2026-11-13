@@ -1,5 +1,7 @@
 # Deployment Guide
 
+> **Alibaba Cloud ECS + BT Panel (宝塔) / 域名 `nt.abcyjw.me`**：见中文专篇 [ALIYUN_BT_DEPLOYMENT_CN.md](ALIYUN_BT_DEPLOYMENT_CN.md)。
+
 ## Prerequisites
 
 - Python 3.11+

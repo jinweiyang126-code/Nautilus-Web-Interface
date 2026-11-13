@@ -4,7 +4,8 @@ WORKDIR /app
 
 # Install dependencies first (layer cache)
 COPY package*.json ./
-RUN npm ci
+# vite@7 vs @builder.io/vite-plugin-jsx-loc peer range (^4 || ^5) — accept legacy peers for CI install
+RUN npm ci --legacy-peer-deps
 
 # Copy source and build
 COPY . .
