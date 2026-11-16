@@ -134,7 +134,7 @@ class OkxRestClient:
         if code == "0":
             return payload
 
-        msg = str(payload.get("msg", "") or payload)
+        msg = self._format_error_message(payload)
         # Auth / key / passphrase / demo mismatch
         if code in ("50111", "50113", "50114", "50115", "50119", "50101") or any(
             k in msg.lower() for k in ("api key", "passphrase", "signature", "invalid key")
@@ -145,6 +145,39 @@ class OkxRestClient:
             raise ConnectionError(f"OKX HTTP {resp.status_code}: {msg}")
 
         raise OkxApiError(f"OKX error {code}: {msg}")
+
+    @staticmethod
+    def _format_error_message(payload: Dict[str, Any]) -> str:
+        """Prefer nested data[].sCode/sMsg over generic 'All operations failed'."""
+        top = str(payload.get("msg") or "")
+        parts: List[str] = []
+        for item in payload.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            scode = item.get("sCode")
+            smsg = item.get("sMsg")
+            if scode or smsg:
+                parts.append(f"sCode={scode}: {smsg}")
+        if parts:
+            detail = "; ".join(parts)
+            return f"{top} ({detail})" if top else detail
+        return top or str(payload)
+
+    @staticmethod
+    def format_number(value: Any) -> str:
+        """Format size/price without scientific notation or trailing .0 noise."""
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return ""
+            try:
+                value = float(text)
+            except ValueError:
+                return text
+        text = f"{float(value):.12f}".rstrip("0").rstrip(".")
+        return text or "0"
 
     async def get_balance(self, ccy: Optional[str] = None) -> List[Dict[str, Any]]:
         params = {"ccy": ccy} if ccy else None
@@ -167,14 +200,29 @@ class OkxRestClient:
             "tdMode": td_mode,
             "side": side.lower(),
             "ordType": ord_type.lower(),
-            "sz": sz,
+            "sz": self.format_number(sz),
         }
-        if px is not None:
-            body["px"] = px
+        if px is not None and str(px).strip() != "":
+            body["px"] = self.format_number(px)
         if cl_ord_id:
-            body["clOrdId"] = cl_ord_id
+            # OKX clOrdId: 1-32 alphanumeric
+            body["clOrdId"] = str(cl_ord_id)[:32]
 
-        payload = await self.request("POST", "/api/v5/trade/order", body=body)
+        logger.info(
+            "OKX place order demo=%s body=%s",
+            self.demo,
+            {k: body[k] for k in body if k != "clOrdId"},
+        )
+        try:
+            payload = await self.request("POST", "/api/v5/trade/order", body=body)
+        except OkxApiError as exc:
+            # Account mode may reject cash — retry once with cross for spot
+            if td_mode == "cash" and "51010" in str(exc):
+                body["tdMode"] = "cross"
+                logger.info("OKX retry place order with tdMode=cross")
+                payload = await self.request("POST", "/api/v5/trade/order", body=body)
+            else:
+                raise
         data = (payload.get("data") or [{}])[0]
         scode = str(data.get("sCode") or "0")
         if scode not in ("0", ""):
