@@ -489,7 +489,7 @@ class NautilusTradingSystem:
         import random
         try:
             from nautilus_trader.test_kit.providers import TestInstrumentProvider
-            from nautilus_trader.model.data import Bar, BarType
+            from nautilus_trader.model.data import BarType
             from nautilus_trader.model.objects import Price, Quantity
 
             engine_config = BacktestEngineConfig(
@@ -515,13 +515,19 @@ class NautilusTradingSystem:
 
             engine.add_instrument(instrument)
 
-            # Generate synthetic bar data (geometric brownian motion with slight upward drift).
-            # Must be EXTERNAL: bars are pre-built and fed via engine.add_data(), not aggregated from ticks.
-            bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-BID-EXTERNAL")
-            bars = []
+            # FX matching engine needs QuoteTicks (not bars alone) or orders get
+            # "no market for EUR/USD.SIM". Generate synthetic ticks; strategy
+            # subscribes to INTERNAL 1-minute BID bars aggregated from them.
+            from nautilus_trader.model.data import QuoteTick
+
+            bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-BID-INTERNAL")
+            ticks = []
             current_price = 1.10000
-            start_ts = 1_609_459_200_000_000_000  # 2021-01-01 00:00:00 UTC (nanoseconds)
-            bar_ns = 60_000_000_000  # 1 minute in nanoseconds
+            # Monday 2021-01-04 00:00 UTC — avoid New Year holiday session gaps
+            start_ts = 1_609_718_400_000_000_000
+            bar_ns = 60_000_000_000  # 1 minute
+            half_spread = 0.00005  # 0.5 pip each side
+            size = Quantity.from_str("1000000")
 
             random.seed(42)
             for i in range(num_bars):
@@ -530,22 +536,27 @@ class NautilusTradingSystem:
                 close_p = max(0.5, current_price * (1 + change_pct))
                 high_p = max(open_p, close_p) * (1 + abs(random.gauss(0, 0.00008)))
                 low_p = min(open_p, close_p) * (1 - abs(random.gauss(0, 0.00008)))
-                ts = start_ts + i * bar_ns
+                base_ts = start_ts + i * bar_ns
 
-                bar = Bar(
-                    bar_type=bar_type,
-                    open=Price.from_str(f"{open_p:.5f}"),
-                    high=Price.from_str(f"{high_p:.5f}"),
-                    low=Price.from_str(f"{low_p:.5f}"),
-                    close=Price.from_str(f"{close_p:.5f}"),
-                    volume=Quantity.from_str("1000000"),
-                    ts_event=ts,
-                    ts_init=ts,
-                )
-                bars.append(bar)
+                # OHLC path as 4 quote ticks (bid/ask around mid) so the book has prices
+                for j, mid in enumerate((open_p, high_p, low_p, close_p)):
+                    ts = base_ts + j * 1_000_000  # +1ms steps within the minute
+                    bid = max(0.5, mid - half_spread)
+                    ask = mid + half_spread
+                    ticks.append(
+                        QuoteTick(
+                            instrument_id=instrument.id,
+                            bid_price=Price.from_str(f"{bid:.5f}"),
+                            ask_price=Price.from_str(f"{ask:.5f}"),
+                            bid_size=size,
+                            ask_size=size,
+                            ts_event=ts,
+                            ts_init=ts,
+                        )
+                    )
                 current_price = close_p
 
-            engine.add_data(bars)
+            engine.add_data(ticks)
 
             strategy_config = SMACrossoverConfig(
                 strategy_id="demo_sma",
@@ -576,15 +587,15 @@ class NautilusTradingSystem:
             total_trades = len(closed_pos)
             win_rate = (winning / total_trades * 100) if total_trades > 0 else 0.0
 
-            equity_curve = self._build_equity_curve(positions, starting_balance, "2021-01-01")
+            equity_curve = self._build_equity_curve(positions, starting_balance, "2021-01-04")
             max_drawdown = self._calc_max_drawdown(equity_curve)
             sharpe_ratio = self._calc_sharpe(equity_curve)
 
             result = {
                 "strategy_id": "demo",
                 "strategy_name": f"SMA Crossover (fast={fast_period}, slow={slow_period})",
-                "start_date": "2021-01-01",
-                "end_date": "2021-01-08",
+                "start_date": "2021-01-04",
+                "end_date": "2021-01-11",
                 "starting_balance": starting_balance,
                 "ending_balance": round(final_balance, 2),
                 "total_pnl": round(total_pnl, 2),

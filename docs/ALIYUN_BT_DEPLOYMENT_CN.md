@@ -284,17 +284,23 @@ docker compose ps
 
 ## 9. 常见问题
 
-### Demo 回测 HTTP 500：`bar_type.aggregation_source ... was not equal to required source`
+### Demo / Sweep 回测成交数为 0，日志 `no market for EUR/USD.SIM`
 
-原因：Demo 用 `engine.add_data(bars)` 喂入已生成的 K 线时，BarType 必须是 `EXTERNAL`，不能是 `INTERNAL`。
+原因：只喂 K 线时 FX 模拟撮合没有盘口，市价单会被拒。Demo 已改为生成 QuoteTick，并由引擎内部聚合成 `INTERNAL` 1 分钟 K 线。
 
-仓库已修复为 `...-1-MINUTE-BID-EXTERNAL`。服务器更新：
+服务器更新：
 
 ```bash
 cd /root/nautilus-web
 git pull origin main
 docker compose up -d --build backend
 ```
+
+### Demo 回测 HTTP 500：`bar_type.aggregation_source ... was not equal to required source`
+
+原因：若只用 `add_data(bars)`，BarType 须为 `EXTERNAL`。当前 Demo 已改为 QuoteTick + `INTERNAL` 聚合，一般不再触发该错误。
+
+服务器更新同上：`git pull` 后 `docker compose up -d --build backend`。
 
 ### 宝塔反代报错：`invalid port in upstream "127.0.0.1:3000/"`
 
