@@ -8,8 +8,14 @@ On the server (Docker Compose):
 
 ```bash
 cd /root/nautilus-web
-mkdir -p nautilus_data
+# Host dir must be writable by the container user (appuser), or run seed as root
+mkdir -p nautilus_data/catalog
+chmod -R a+rwX nautilus_data
+
 docker compose run --rm -e CATALOG_PATH=/nautilus_data/catalog backend python3 scripts/seed_demo_catalog.py
+# If PermissionError persists:
+# docker compose run --rm --user root -e CATALOG_PATH=/nautilus_data/catalog backend python3 scripts/seed_demo_catalog.py
+
 docker compose up -d backend
 ```
 

@@ -291,9 +291,12 @@ docker compose ps
 ```bash
 cd /root/nautilus-web
 git pull origin main
-mkdir -p nautilus_data
+mkdir -p nautilus_data/catalog
+chmod -R a+rwX nautilus_data
 docker compose up -d --build backend
 docker compose run --rm -e CATALOG_PATH=/nautilus_data/catalog backend python3 scripts/seed_demo_catalog.py
+# 若仍 Permission denied，用 root 跑种子脚本：
+# docker compose run --rm --user root -e CATALOG_PATH=/nautilus_data/catalog backend python3 scripts/seed_demo_catalog.py
 docker compose up -d backend
 ```
 
