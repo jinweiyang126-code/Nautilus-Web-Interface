@@ -8,7 +8,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
@@ -293,18 +293,18 @@ class NautilusTradingSystem:
             # Add instrument
             engine.add_instrument(instrument)
             
-            # Load quote tick data from catalog
+            # Load quote tick data from catalog (API name varies by nautilus_trader version)
             logger.info("Loading quote tick data for %s...", instrument.id)
-            quote_ticks = self.catalog.quote_ticks(
-                instrument_ids=[str(instrument.id)],
-                start=start_date,
-                end=end_date
-            )
-            
+            quote_ticks = self._load_quote_ticks(str(instrument.id), start_date, end_date)
+
             if not quote_ticks:
                 return {
                     "success": False,
-                    "message": f"No quote tick data found for {instrument.id} between {start_date} and {end_date}"
+                    "message": (
+                        f"No quote tick data found for {instrument.id} between "
+                        f"{start_date} and {end_date}. Seed catalog or pick dates "
+                        f"that overlap available data."
+                    ),
                 }
             
             logger.info("Loaded %d quote ticks", len(quote_ticks))
@@ -629,6 +629,57 @@ class NautilusTradingSystem:
                 "error": str(e),
                 "trace": error_trace,
             }
+
+    def _load_quote_ticks(self, instrument_id: str, start_date: str, end_date: str) -> List[Any]:
+        """Load quote ticks from catalog; supports older quote_ticks and newer query_quote_ticks."""
+        if self.catalog is None:
+            return []
+
+        start_ns = int(datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1e9)
+        # Inclusive end-of-day
+        end_ns = int(
+            (
+                datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+            ).timestamp()
+            * 1e9
+        )
+
+        # Prefer modern API
+        if hasattr(self.catalog, "query_quote_ticks"):
+            try:
+                return list(
+                    self.catalog.query_quote_ticks(
+                        identifiers=[instrument_id],
+                        start=start_ns,
+                        end=end_ns,
+                    )
+                )
+            except TypeError:
+                # Some builds use instrument_ids= or string dates
+                try:
+                    return list(
+                        self.catalog.query_quote_ticks(
+                            instrument_ids=[instrument_id],
+                            start=start_date,
+                            end=end_date,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning("query_quote_ticks failed: %s", e)
+
+        if hasattr(self.catalog, "quote_ticks"):
+            try:
+                return list(
+                    self.catalog.quote_ticks(
+                        instrument_ids=[instrument_id],
+                        start=start_date,
+                        end=end_date,
+                    )
+                )
+            except Exception as e:
+                logger.warning("quote_ticks failed: %s", e)
+
+        return []
 
     def _order_to_dict(self, order) -> Dict[str, Any]:
         """Convert Nautilus Order to dictionary."""

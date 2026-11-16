@@ -9,7 +9,9 @@ from typing import List
 from fastapi import WebSocket
 
 backend_dir = Path(__file__).parent
-catalog_path = str(backend_dir.parent / "nautilus_data" / "catalog")
+_default_catalog = str(backend_dir.parent / "nautilus_data" / "catalog")
+# Prefer env so Docker can mount catalog without relying on repo layout/symlinks.
+catalog_path = os.environ.get("NAUTILUS_CATALOG_PATH", _default_catalog)
 os.environ.setdefault("NAUTILUS_CATALOG_PATH", catalog_path)
 
 from nautilus_core import NautilusTradingSystem  # noqa: E402

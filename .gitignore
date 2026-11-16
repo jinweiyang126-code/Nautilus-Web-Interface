@@ -75,4 +75,5 @@ dist/
 backups/
 cache/
 backend/data/
+nautilus_data/catalog/
 

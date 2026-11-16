@@ -24,12 +24,15 @@ services:
       API_KEY: "${API_KEY:-}"
 
       NAUTILUS_API_PORT: "8000"
+      NAUTILUS_CATALOG_PATH: "${NAUTILUS_CATALOG_PATH:-/nautilus_data/catalog}"
       RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-200}"
       LOGIN_RATE_LIMIT_PER_MINUTE: "${LOGIN_RATE_LIMIT_PER_MINUTE:-5}"
     volumes:
       - backend_data:/app/data
+      # Host dir for Real Data backtests (seed with: docker compose run --rm backend python3 scripts/seed_demo_catalog.py)
+      - ./nautilus_data:/nautilus_data
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 1g
     cpus: "1.0"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

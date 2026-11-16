@@ -284,6 +284,27 @@ docker compose ps
 
 ## 9. 常见问题
 
+### 初始化引擎失败：`Data catalog not found at /nautilus_data/catalog`
+
+真实数据回测需要 Parquet catalog。按下面生成最小演示数据并挂载（`docker-compose.yml` 已包含 `./nautilus_data:/nautilus_data`）：
+
+```bash
+cd /root/nautilus-web
+git pull origin main
+mkdir -p nautilus_data
+docker compose up -d --build backend
+docker compose run --rm -e CATALOG_PATH=/nautilus_data/catalog backend python3 scripts/seed_demo_catalog.py
+docker compose up -d backend
+```
+
+然后：
+
+1. Admin → **初始化引擎**（应成功）
+2. 回测 → **真实数据**：日期请选在 **2024-01-02 ~ 2024-01-12**（种子数据范围），不要选全年
+3. 选择已创建的 `sma_crossover` 策略后运行
+
+说明见 `nautilus_data/README.md`。
+
 ### Demo / Sweep 回测成交数为 0，日志 `no market for EUR/USD.SIM`
 
 原因：只喂 K 线时 FX 模拟撮合没有盘口，市价单会被拒。Demo 已改为生成 QuoteTick，并由引擎内部聚合成 `INTERNAL` 1 分钟 K 线。
