@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import api from '../lib/api';
+import api, { ApiError } from '../lib/api';
 
 interface RiskMetrics {
   total_exposure: number;
@@ -17,18 +17,52 @@ interface RiskLimits {
   max_positions: number;
 }
 
+const DEFAULT_LIMITS: RiskLimits = {
+  max_order_size: 10000,
+  max_position_size: 50000,
+  max_daily_loss: 5000,
+  max_positions: 10,
+};
+
+function num(value: unknown, fallback = 0): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function money(value: unknown, digits = 2): string {
+  return num(value).toFixed(digits);
+}
+
+function normalizeMetrics(raw: Record<string, unknown> | null | undefined): RiskMetrics {
+  const data = raw ?? {};
+  return {
+    total_exposure: num(data.total_exposure),
+    // Backend may not expose margin fields yet — default to 0
+    margin_used: num(data.margin_used),
+    margin_available: num(data.margin_available),
+    max_drawdown: num(data.max_drawdown),
+    var_1d: num(data.var_1d ?? data.var_95),
+    position_count: num(data.position_count ?? data.open_positions),
+  };
+}
+
+function normalizeLimits(raw: Record<string, unknown> | null | undefined): RiskLimits {
+  const data = raw ?? {};
+  return {
+    max_order_size: num(data.max_order_size, DEFAULT_LIMITS.max_order_size),
+    max_position_size: num(data.max_position_size, DEFAULT_LIMITS.max_position_size),
+    max_daily_loss: num(data.max_daily_loss, DEFAULT_LIMITS.max_daily_loss),
+    max_positions: num(data.max_positions, DEFAULT_LIMITS.max_positions),
+  };
+}
+
 export default function RiskPage() {
   const [metrics, setMetrics] = useState<RiskMetrics | null>(null);
   const [limits, setLimits] = useState<RiskLimits | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [editingLimits, setEditingLimits] = useState(false);
-  const [newLimits, setNewLimits] = useState<RiskLimits>({
-    max_order_size: 10000,
-    max_position_size: 50000,
-    max_daily_loss: 5000,
-    max_positions: 10
-  });
+  const [newLimits, setNewLimits] = useState<RiskLimits>(DEFAULT_LIMITS);
 
   useEffect(() => {
     fetchData();
@@ -39,14 +73,23 @@ export default function RiskPage() {
   const fetchData = async () => {
     try {
       const [metricsData, limitsData] = await Promise.all([
-        api.get<RiskMetrics>('/api/risk/metrics'),
-        api.get<RiskLimits>('/api/risk/limits'),
+        api.get<Record<string, unknown>>('/api/risk/metrics'),
+        api.get<Record<string, unknown>>('/api/risk/limits'),
       ]);
-      setMetrics(metricsData);
-      setLimits(limitsData);
-      setNewLimits(limitsData);
+      const nextMetrics = normalizeMetrics(metricsData);
+      const nextLimits = normalizeLimits(limitsData);
+      setMetrics(nextMetrics);
+      setLimits(nextLimits);
+      setNewLimits(nextLimits);
+      setFetchError(null);
     } catch (error) {
-      setFetchError(error instanceof Error ? error.message : 'Failed to load risk data');
+      const detail =
+        error instanceof ApiError
+          ? (typeof error.detail === 'string' ? error.detail : error.message)
+          : error instanceof Error
+            ? error.message
+            : 'Failed to load risk data';
+      setFetchError(detail);
     } finally {
       setLoading(false);
     }
@@ -58,12 +101,18 @@ export default function RiskPage() {
       setEditingLimits(false);
       fetchData();
     } catch (error) {
-      setFetchError(error instanceof Error ? error.message : 'Failed to update limits');
+      const detail =
+        error instanceof ApiError
+          ? (typeof error.detail === 'string' ? error.detail : error.message)
+          : error instanceof Error
+            ? error.message
+            : 'Failed to update limits';
+      setFetchError(detail);
     }
   };
 
   const getExposurePercentage = () => {
-    if (!metrics || !limits) return 0;
+    if (!metrics || !limits || limits.max_position_size <= 0) return 0;
     return (metrics.total_exposure / limits.max_position_size) * 100;
   };
 
@@ -81,24 +130,31 @@ export default function RiskPage() {
     );
   }
 
+  const m = metrics ?? normalizeMetrics(null);
+  const l = limits ?? DEFAULT_LIMITS;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 p-8">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-4xl font-bold text-gray-900 mb-2">🛡️ Risk Management</h1>
             <p className="text-gray-600">Monitor and control trading risk</p>
           </div>
           <button
-            onClick={() => window.location.href = '/trader'}
+            onClick={() => (window.location.href = '/trader')}
             className="px-6 py-3 bg-white border-2 border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-all font-semibold"
           >
             ← Back to Dashboard
           </button>
         </div>
 
-        {/* Risk Metrics */}
+        {fetchError && (
+          <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {fetchError}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white rounded-xl shadow-lg p-6">
             <div className="flex items-center justify-between mb-4">
@@ -106,16 +162,16 @@ export default function RiskPage() {
               <div className="text-2xl">💰</div>
             </div>
             <div className="text-3xl font-bold text-gray-900 mb-2">
-              ${metrics?.total_exposure.toFixed(2)}
+              ${money(m.total_exposure)}
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
-              <div 
+              <div
                 className="bg-blue-600 h-2 rounded-full transition-all"
                 style={{ width: `${Math.min(getExposurePercentage(), 100)}%` }}
               />
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              {getExposurePercentage().toFixed(1)}% of max position size
+              {money(getExposurePercentage(), 1)}% of max position size
             </div>
           </div>
 
@@ -125,19 +181,25 @@ export default function RiskPage() {
               <div className="text-2xl">📊</div>
             </div>
             <div className="text-3xl font-bold text-gray-900 mb-2">
-              ${metrics?.margin_used.toFixed(2)}
+              ${money(m.margin_used)}
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
-              <div 
+              <div
                 className={`h-2 rounded-full transition-all ${
-                  getMarginPercentage() > 80 ? 'bg-red-600' : 
-                  getMarginPercentage() > 60 ? 'bg-yellow-600' : 'bg-green-600'
+                  getMarginPercentage() > 80
+                    ? 'bg-red-600'
+                    : getMarginPercentage() > 60
+                      ? 'bg-yellow-600'
+                      : 'bg-green-600'
                 }`}
                 style={{ width: `${Math.min(getMarginPercentage(), 100)}%` }}
               />
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              ${metrics?.margin_available.toFixed(2)} available
+              ${money(m.margin_available)} available
+              {(m.margin_used === 0 && m.margin_available === 0) && (
+                <span className="ml-1 text-gray-400">(not provided by API yet)</span>
+              )}
             </div>
           </div>
 
@@ -147,15 +209,14 @@ export default function RiskPage() {
               <div className="text-2xl">📉</div>
             </div>
             <div className="text-3xl font-bold text-red-600 mb-2">
-              {metrics?.max_drawdown.toFixed(2)}%
+              {money(m.max_drawdown)}%
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              VaR (1D): ${metrics?.var_1d.toFixed(2)}
+              VaR (1D): ${money(m.var_1d)} · Open positions: {m.position_count}
             </div>
           </div>
         </div>
 
-        {/* Risk Limits */}
         <div className="bg-white rounded-xl shadow-lg p-8 mb-8">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold text-gray-900">Risk Limits</h2>
@@ -171,7 +232,7 @@ export default function RiskPage() {
                 <button
                   onClick={() => {
                     setEditingLimits(false);
-                    setNewLimits(limits!);
+                    setNewLimits(l);
                   }}
                   className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-all font-semibold"
                 >
@@ -196,13 +257,13 @@ export default function RiskPage() {
                 <input
                   type="number"
                   value={newLimits.max_order_size}
-                  onChange={(e) => setNewLimits({ ...newLimits, max_order_size: parseFloat(e.target.value) })}
+                  onChange={(e) =>
+                    setNewLimits({ ...newLimits, max_order_size: num(e.target.value, 0) })
+                  }
                   className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                 />
               ) : (
-                <div className="text-2xl font-bold text-gray-900">
-                  ${limits?.max_order_size.toFixed(2)}
-                </div>
+                <div className="text-2xl font-bold text-gray-900">${money(l.max_order_size)}</div>
               )}
             </div>
 
@@ -214,12 +275,14 @@ export default function RiskPage() {
                 <input
                   type="number"
                   value={newLimits.max_position_size}
-                  onChange={(e) => setNewLimits({ ...newLimits, max_position_size: parseFloat(e.target.value) })}
+                  onChange={(e) =>
+                    setNewLimits({ ...newLimits, max_position_size: num(e.target.value, 0) })
+                  }
                   className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                 />
               ) : (
                 <div className="text-2xl font-bold text-gray-900">
-                  ${limits?.max_position_size.toFixed(2)}
+                  ${money(l.max_position_size)}
                 </div>
               )}
             </div>
@@ -232,13 +295,13 @@ export default function RiskPage() {
                 <input
                   type="number"
                   value={newLimits.max_daily_loss}
-                  onChange={(e) => setNewLimits({ ...newLimits, max_daily_loss: parseFloat(e.target.value) })}
+                  onChange={(e) =>
+                    setNewLimits({ ...newLimits, max_daily_loss: num(e.target.value, 0) })
+                  }
                   className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                 />
               ) : (
-                <div className="text-2xl font-bold text-gray-900">
-                  ${limits?.max_daily_loss.toFixed(2)}
-                </div>
+                <div className="text-2xl font-bold text-gray-900">${money(l.max_daily_loss)}</div>
               )}
             </div>
 
@@ -250,22 +313,21 @@ export default function RiskPage() {
                 <input
                   type="number"
                   value={newLimits.max_positions}
-                  onChange={(e) => setNewLimits({ ...newLimits, max_positions: parseInt(e.target.value) })}
+                  onChange={(e) =>
+                    setNewLimits({ ...newLimits, max_positions: num(e.target.value, 0) })
+                  }
                   className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                 />
               ) : (
-                <div className="text-2xl font-bold text-gray-900">
-                  {limits?.max_positions}
-                </div>
+                <div className="text-2xl font-bold text-gray-900">{l.max_positions}</div>
               )}
             </div>
           </div>
         </div>
 
-        {/* Risk Alerts */}
         <div className="bg-white rounded-xl shadow-lg p-8">
           <h2 className="text-2xl font-bold text-gray-900 mb-6">Risk Alerts</h2>
-          
+
           <div className="space-y-4">
             {getMarginPercentage() > 80 && (
               <div className="bg-red-50 border-l-4 border-red-600 p-4 rounded">
@@ -281,7 +343,7 @@ export default function RiskPage() {
               </div>
             )}
 
-            {metrics && metrics.position_count >= (limits?.max_positions || 10) && (
+            {m.position_count >= l.max_positions && (
               <div className="bg-yellow-50 border-l-4 border-yellow-600 p-4 rounded">
                 <div className="flex items-center">
                   <div className="text-2xl mr-3">⚠️</div>
@@ -328,4 +390,3 @@ export default function RiskPage() {
     </div>
   );
 }
-
