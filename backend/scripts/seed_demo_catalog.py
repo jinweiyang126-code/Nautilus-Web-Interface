@@ -77,7 +77,10 @@ def main() -> int:
         instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD")
 
     catalog = ParquetDataCatalog(str(catalog_path))
-    catalog.write_instruments([instrument])
+    print(
+        "Catalog writers:",
+        sorted(name for name in dir(catalog) if name.startswith("write")),
+    )
 
     random.seed(42)
     mid = 1.10000
@@ -113,14 +116,46 @@ def main() -> int:
                 )
             mid = close_p
 
-    print(f"Writing {len(ticks)} quote ticks for {instrument.id} …")
-    catalog.write_quote_ticks(ticks)
+    print(f"Writing instrument + {len(ticks)} quote ticks for {instrument.id} …")
+    _write_instruments(catalog, [instrument])
+    _write_quote_ticks(catalog, ticks)
 
-    instruments = catalog.instruments()
+    instruments = catalog.instruments() if hasattr(catalog, "instruments") else []
     print(f"Done. instruments={len(instruments)} path={catalog_path}")
     print("In the UI: Initialize Engine, then Real Data backtest with dates inside this range.")
     print(f"Suggested dates: {start.date()} -> {end.date()}")
     return 0
+
+
+def _write_instruments(catalog, instruments) -> None:
+    """Compatibility across nautilus_trader catalog APIs."""
+    if hasattr(catalog, "write_instruments"):
+        catalog.write_instruments(instruments)
+        return
+    if hasattr(catalog, "write_instrument"):
+        for inst in instruments:
+            catalog.write_instrument(inst)
+        return
+    if hasattr(catalog, "write_data"):
+        catalog.write_data(instruments)
+        return
+    raise AttributeError(
+        "ParquetDataCatalog has no write_instruments/write_instrument/write_data; "
+        f"available write_* : {[n for n in dir(catalog) if n.startswith('write')]}"
+    )
+
+
+def _write_quote_ticks(catalog, ticks) -> None:
+    if hasattr(catalog, "write_quote_ticks"):
+        catalog.write_quote_ticks(ticks)
+        return
+    if hasattr(catalog, "write_data"):
+        catalog.write_data(ticks)
+        return
+    raise AttributeError(
+        "ParquetDataCatalog has no write_quote_ticks/write_data; "
+        f"available write_* : {[n for n in dir(catalog) if n.startswith('write')]}"
+    )
 
 
 if __name__ == "__main__":
