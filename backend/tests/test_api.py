@@ -423,10 +423,23 @@ def test_adapter_disconnect(client):
 
 def test_adapter_status_persists_after_connect(client):
     """After connect, GET /adapters should show status='connected'."""
-    client.post(
-        "/api/adapters/okx/connect",
-        json={"api_key": "testkey12345", "api_secret": "testsecret12345"},
-    )
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        "routers.adapters.live_manager.connect_okx",
+        new_callable=AsyncMock,
+        return_value={"connection_id": "CONN-OKX-TEST", "verified": True, "demo": True},
+    ):
+        r_connect = client.post(
+            "/api/adapters/okx/connect",
+            json={
+                "api_key": "testkey12345",
+                "api_secret": "testsecret12345",
+                "passphrase": "demo-pass",
+                "demo": True,
+            },
+        )
+    assert r_connect.status_code == 200
     r = client.get("/api/adapters/okx")
     assert r.json()["status"] == "connected"
 

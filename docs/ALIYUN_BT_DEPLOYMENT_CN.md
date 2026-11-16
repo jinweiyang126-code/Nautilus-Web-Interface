@@ -282,6 +282,25 @@ docker compose ps
 
 ---
 
+## 8.1 OKX Demo 纸交易
+
+本仓库已支持 **OKX Demo Trading**（Adapters 页连接后可验证余额、现货下单/撤单、同步持仓）。
+
+1. 登录 OKX → **交易 → 模拟交易** → 个人中心 → **模拟盘 API**，创建 Demo API Key（记录 Key / Secret / Passphrase）
+2. 网站 Adapters → **OKX** → ⚙ → 填入三项凭证，勾选 **OKX Demo Trading (paper)**（默认勾选）→ Connect & Save
+3. 连接成功后可在订单/持仓相关页面走 Demo 现货；请求会带 `x-simulated-trading: 1`，**不会动真实资金**
+4. 服务器更新代码后需重建：
+
+```bash
+cd /root/nautilus-web
+git pull origin main
+docker compose up -d --build
+```
+
+注意：Demo Key 与实盘 Key 不互通；若报 `50101` 多为环境/Header 与 Key 类型不匹配。
+
+---
+
 ## 9. 常见问题
 
 ### 初始化引擎失败：`Data catalog not found at /nautilus_data/catalog`

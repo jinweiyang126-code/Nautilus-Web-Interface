@@ -97,19 +97,31 @@ class TestCredentialEncryption:
 
     def test_api_response_masks_key(self, client):
         """GET /api/adapters/{id} must return masked key, NOT the real key."""
-        client.post(
-            "/api/adapters/okx/connect",
-            json={"api_key": "REAL_KEY_XYZ", "api_secret": "REAL_SECRET_XYZ"},
-        )
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "routers.adapters.live_manager.connect_okx",
+            new_callable=AsyncMock,
+            return_value={"connection_id": "CONN-OKX-TEST", "verified": True, "demo": True},
+        ):
+            client.post(
+                "/api/adapters/okx/connect",
+                json={
+                    "api_key": "REAL_KEY_XYZ123",
+                    "api_secret": "REAL_SECRET_XYZ",
+                    "passphrase": "demo-pass",
+                    "demo": True,
+                },
+            )
         r = client.get("/api/adapters/okx")
         body = r.json()
 
-        assert "api_key" not in body or body.get("api_key") != "REAL_KEY_XYZ", \
+        assert "api_key" not in body or body.get("api_key") != "REAL_KEY_XYZ123", \
             "Full plaintext key must not appear in GET response"
 
         # Should have a masked field like "****_XYZ" or "api_key_masked"
         masked = body.get("api_key_masked", body.get("api_key", ""))
-        assert "REAL_KEY_XYZ" not in masked, "Plaintext key leaked in API response"
+        assert "REAL_KEY_XYZ123" not in masked, "Plaintext key leaked in API response"
 
     def test_list_adapters_does_not_leak_keys(self, client):
         """GET /api/adapters list must never expose plaintext credentials."""

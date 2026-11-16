@@ -18,6 +18,7 @@ interface AdapterState {
   connected: boolean;
   apiKey: string;
   apiSecret: string;
+  passphrase: string;
   endpoint: string;
   testnet: boolean;
 }
@@ -55,12 +56,14 @@ export default function AdaptersPage() {
         const initial: Record<string, AdapterState> = {};
         list.forEach(a => {
           // Restore connected status and credential hint from backend
+          // OKX defaults to Demo Trading (safer); other venues keep mainnet unless checked
           initial[a.id] = {
             connected: a.status === 'connected',
             apiKey: a.has_credentials ? '••••••••' : '',
             apiSecret: '',
+            passphrase: '',
             endpoint: '',
-            testnet: false,
+            testnet: a.id === 'okx' ? true : false,
           };
         });
         setStates(initial);
@@ -117,24 +120,43 @@ export default function AdaptersPage() {
     const state = states[adapterId];
     const apiKey = state?.apiKey && state.apiKey !== '••••••••' ? state.apiKey : undefined;
     const apiSecret = state?.apiSecret || undefined;
+    const passphrase = state?.passphrase || undefined;
+    const useDemo = state?.testnet ?? adapterId === 'okx';
 
     if (!apiKey && !apiSecret) {
       notifyError('Enter at least an API key before connecting');
       return;
     }
+    if (adapterId === 'okx' && !passphrase) {
+      notifyError('OKX requires API passphrase (set when creating the Demo API key)');
+      return;
+    }
 
-    info('Connecting…');
+    info(adapterId === 'okx' && useDemo ? 'Connecting OKX Demo…' : 'Connecting…');
     try {
       await api.post(`/api/adapters/${adapterId}/connect`, {
         api_key: apiKey,
         api_secret: apiSecret || null,
+        passphrase: passphrase || null,
+        demo: adapterId === 'okx' ? useDemo : undefined,
+        testnet: useDemo,
       });
       setStates(prev => ({
         ...prev,
-        [adapterId]: { ...prev[adapterId], connected: true, apiKey: '••••••••', apiSecret: '' },
+        [adapterId]: {
+          ...prev[adapterId],
+          connected: true,
+          apiKey: '••••••••',
+          apiSecret: '',
+          passphrase: '',
+        },
       }));
       setConfigOpen(null);
-      success('Adapter connected and credentials saved');
+      success(
+        adapterId === 'okx' && useDemo
+          ? 'OKX Demo connected — paper trading only'
+          : 'Adapter connected and credentials saved',
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Connection failed';
       notifyError(msg);
@@ -303,6 +325,21 @@ export default function AdaptersPage() {
                           className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-cyan-400"
                         />
                       </div>
+                      {adapter.id === 'okx' && (
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">Passphrase</label>
+                          <input
+                            type="password"
+                            placeholder="API passphrase"
+                            value={states[adapter.id]?.passphrase ?? ''}
+                            onChange={e => setStates(prev => ({ ...prev, [adapter.id]: { ...prev[adapter.id], passphrase: e.target.value } }))}
+                            className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-cyan-400"
+                          />
+                          <p className="text-[10px] text-gray-400 mt-1">
+                            Create keys under Trade → Demo Trading → Demo Trading API
+                          </p>
+                        </div>
+                      )}
                       <div className="flex items-center gap-2">
                         <input
                           type="checkbox"
@@ -311,7 +348,9 @@ export default function AdaptersPage() {
                           onChange={e => setStates(prev => ({ ...prev, [adapter.id]: { ...prev[adapter.id], testnet: e.target.checked } }))}
                           className="rounded"
                         />
-                        <label htmlFor={`testnet-${adapter.id}`} className="text-xs text-gray-600">Use testnet/paper trading</label>
+                        <label htmlFor={`testnet-${adapter.id}`} className="text-xs text-gray-600">
+                          {adapter.id === 'okx' ? 'OKX Demo Trading (paper)' : 'Use testnet/paper trading'}
+                        </label>
                       </div>
                       <button
                         onClick={() => void saveConfig(adapter.id)}

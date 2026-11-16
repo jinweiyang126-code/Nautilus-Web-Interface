@@ -2,18 +2,20 @@
 LiveTradingManager — Sprint 2 (S2-01 through S2-05).
 
 Manages the lifecycle of live adapter connections and order routing.
-Uses NautilusTrader's built-in adapter HTTP clients — NOT custom REST code.
+Uses NautilusTrader's built-in adapter HTTP clients for Binance/Bybit,
+and a dedicated OKX REST client for OKX Demo Trading.
 
 Architecture:
 - BinanceHttpClient + BinanceSpotAccountHttpAPI  → Nautilus Binance infrastructure
 - BybitHttpClient   + BybitAccountHttpAPI        → Nautilus Bybit infrastructure
+- OkxRestClient (x-simulated-trading)            → OKX Demo / live REST
 - LiveTradingManager wraps these for FastAPI to call
 
 State:
 - S2-01: LiveTradingManager class with full interface
-- S2-02: connect_binance() / connect_bybit() using Nautilus adapter clients
-- S2-03: submit_order() / cancel_order() via Nautilus adapter HTTP APIs
-- S2-04: sync_positions() via Nautilus adapter account queries
+- S2-02: connect_binance() / connect_bybit() / connect_okx()
+- S2-03: submit_order() / cancel_order() via exchange HTTP APIs
+- S2-04: sync_positions() via account queries
 - S2-05: subscribe_ticker() with exponential-backoff reconnect
 """
 
@@ -35,6 +37,10 @@ class BybitAuthError(ConnectionError):
     """Raised when Bybit explicitly rejects credentials (HTTP 401/403)."""
 
 
+class OkxAuthError(ConnectionError):
+    """Raised when OKX explicitly rejects credentials."""
+
+
 @dataclass
 class AdapterConnection:
     adapter_id: str
@@ -44,6 +50,8 @@ class AdapterConnection:
     # NautilusTrader HTTP API objects (set after successful connect)
     binance_spot_api: Any = None   # BinanceSpotAccountHttpAPI
     bybit_account_api: Any = None  # BybitAccountHttpAPI
+    okx_client: Any = None         # OkxRestClient
+    okx_demo: bool = True
 
 
 # ── Nautilus clock singleton (reused across connections) ──────────────────────
@@ -261,6 +269,83 @@ class LiveTradingManager:
                 "account_info": account_info,
             }
 
+    async def connect_okx(
+        self,
+        api_key: str,
+        api_secret: str,
+        passphrase: str,
+        *,
+        demo: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Connect OKX adapter (Demo Trading by default).
+        Verifies credentials via GET /api/v5/account/balance.
+        """
+        from okx_demo_client import OkxAuthError as _OkxAuthError
+        from okx_demo_client import OkxRestClient
+
+        async with self._lock:
+            if not api_key or not api_secret or not passphrase:
+                raise ConnectionError("api_key, api_secret and passphrase are required")
+
+            client = OkxRestClient(
+                api_key=api_key,
+                api_secret=api_secret,
+                passphrase=passphrase,
+                demo=demo,
+            )
+            verified = False
+            account_info: Dict[str, Any] = {}
+
+            try:
+                balances = await client.get_balance()
+                verified = True
+                # Summarise non-zero cash balances for the UI
+                details = []
+                for acct in balances:
+                    for detail in acct.get("details") or []:
+                        eq = float(detail.get("eq") or 0)
+                        if eq > 0:
+                            details.append(
+                                {
+                                    "ccy": detail.get("ccy"),
+                                    "eq": eq,
+                                    "availBal": float(detail.get("availBal") or 0),
+                                }
+                            )
+                account_info = {
+                    "valid": True,
+                    "demo": demo,
+                    "balances": details[:20],
+                    "account_type": "DEMO" if demo else "LIVE",
+                }
+            except _OkxAuthError as exc:
+                raise OkxAuthError(str(exc)) from exc
+            except Exception as exc:
+                err_msg = str(exc).lower()
+                if any(k in err_msg for k in ("401", "403", "invalid", "passphrase", "api key")):
+                    raise OkxAuthError(f"OKX rejected credentials: {exc}") from exc
+                # Network / timeout → connected_offline
+                logger.warning("OKX verify unreachable: %s", exc)
+
+            connection_id = f"CONN-OKX-{uuid.uuid4().hex[:8].upper()}"
+            status = "connected" if verified else "connected_offline"
+            self._connections["okx"] = AdapterConnection(
+                adapter_id="okx",
+                connection_id=connection_id,
+                status=status,
+                okx_client=client,
+                okx_demo=demo,
+            )
+            self._is_active = True
+            return {
+                "success": True,
+                "connection_id": connection_id,
+                "verified": verified,
+                "demo": demo,
+                "account_info": account_info,
+            }
+
     async def disconnect(self, adapter_id: str) -> Dict[str, Any]:
         async with self._lock:
             conn = self._connections.get(adapter_id)
@@ -274,8 +359,8 @@ class LiveTradingManager:
 
     async def submit_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Submit an order via the connected exchange's Nautilus HTTP API.
-        Routes to Binance or Bybit based on active connection.
+        Submit an order via the connected exchange's HTTP API.
+        Routes to Binance, Bybit, or OKX based on active connection.
         """
         if not self.is_connected():
             raise RuntimeError("No adapter connected. Connect an exchange adapter first.")
@@ -288,6 +373,8 @@ class LiveTradingManager:
                     return await self._submit_binance_order(conn, order)
                 elif adapter_id == "bybit" and conn.bybit_account_api:
                     return await self._submit_bybit_order(conn, order)
+                elif adapter_id == "okx" and conn.okx_client:
+                    return await self._submit_okx_order(conn, order)
             except Exception as exc:
                 logger.warning("Exchange order submission failed (%s): %s", adapter_id, exc)
                 raise RuntimeError(str(exc)) from exc
@@ -366,8 +453,54 @@ class LiveTradingManager:
             "exchange": "BYBIT",
         }
 
+    @staticmethod
+    def _to_okx_inst_id(instrument: str) -> str:
+        """Convert BTCUSDT / BTC/USDT / BTC-USDT.OKX → BTC-USDT."""
+        raw = (instrument or "BTC-USDT").upper().replace("/", "-").split(".")[0]
+        if "-" in raw:
+            return raw
+        # Common quote suffixes
+        for quote in ("USDT", "USDC", "USD", "BTC", "ETH"):
+            if raw.endswith(quote) and len(raw) > len(quote):
+                return f"{raw[:-len(quote)]}-{quote}"
+        return raw
+
+    async def _submit_okx_order(
+        self, conn: AdapterConnection, order: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        inst_id = self._to_okx_inst_id(order.get("instrument", "BTC-USDT"))
+        side = str(order.get("side", "buy")).lower()
+        order_type = str(order.get("type", "market")).lower()
+        # OKX uses limit / market / post_only / fok / ioc
+        if order_type not in ("market", "limit", "post_only", "fok", "ioc"):
+            order_type = "market"
+        sz = str(order.get("quantity", "0.001"))
+        px = str(order.get("price")) if order.get("price") is not None else None
+        cl_ord_id = order.get("client_order_id") or order.get("clOrdId")
+
+        result = await conn.okx_client.place_spot_order(
+            inst_id=inst_id,
+            side=side,
+            ord_type=order_type,
+            sz=sz,
+            px=px,
+            cl_ord_id=cl_ord_id,
+        )
+        order_id = str(result.get("ordId") or "")
+        return {
+            "success": True,
+            "order_id": order_id,
+            "exchange_order_id": order_id,
+            "client_order_id": str(result.get("clOrdId") or ""),
+            "status": "pending",
+            "exchange": "OKX",
+            "demo": bool(conn.okx_demo),
+            "sCode": result.get("sCode"),
+            "sMsg": result.get("sMsg"),
+        }
+
     async def cancel_order(self, order_id: str, symbol: str = "BTCUSDT") -> Dict[str, Any]:
-        """Cancel an order on the connected exchange via Nautilus HTTP API."""
+        """Cancel an order on the connected exchange via HTTP API."""
         if not self.is_connected():
             raise RuntimeError("No adapter connected.")
 
@@ -393,6 +526,20 @@ class LiveTradingManager:
                         venue_order_id=order_id,
                     )
                     return {"success": True, "order_id": order_id}
+                elif adapter_id == "okx" and conn.okx_client:
+                    inst_id = self._to_okx_inst_id(symbol)
+                    result = await conn.okx_client.cancel_order(
+                        inst_id=inst_id,
+                        ord_id=order_id if order_id.isdigit() else None,
+                        cl_ord_id=None if order_id.isdigit() else order_id,
+                    )
+                    return {
+                        "success": True,
+                        "order_id": order_id,
+                        "status": "canceled",
+                        "exchange": "OKX",
+                        "sCode": result.get("sCode"),
+                    }
             except Exception as exc:
                 logger.warning("Exchange cancel order failed (%s): %s", adapter_id, exc)
                 return {"success": False, "order_id": order_id, "error": str(exc)}
@@ -402,7 +549,7 @@ class LiveTradingManager:
     async def sync_positions(self) -> List[Dict[str, Any]]:
         """
         Fetch account balances/positions from the connected exchange
-        via NautilusTrader's account HTTP APIs.
+        via account HTTP APIs.
         """
         if not self.is_connected():
             return []
@@ -416,6 +563,8 @@ class LiveTradingManager:
                     positions = await self._fetch_binance_positions(conn)
                 elif adapter_id == "bybit" and conn.bybit_account_api:
                     positions = await self._fetch_bybit_positions(conn)
+                elif adapter_id == "okx" and conn.okx_client:
+                    positions = await self._fetch_okx_positions(conn)
                 else:
                     positions = []
                 all_positions.extend(positions)
@@ -423,6 +572,28 @@ class LiveTradingManager:
                 logger.warning("Position sync failed (%s): %s", adapter_id, exc)
 
         return all_positions
+
+    async def _fetch_okx_positions(self, conn: AdapterConnection) -> List[Dict[str, Any]]:
+        """Query OKX account balance and return non-zero currencies as positions."""
+        balances = await conn.okx_client.get_balance()
+        positions: List[Dict[str, Any]] = []
+        for acct in balances:
+            for detail in acct.get("details") or []:
+                total = float(detail.get("eq") or 0)
+                if total <= 0:
+                    continue
+                asset = str(detail.get("ccy") or "")
+                positions.append({
+                    "instrument": f"{asset}-USDT" if asset != "USDT" else "USDT",
+                    "side": "LONG",
+                    "quantity": total,
+                    "free": float(detail.get("availBal") or 0),
+                    "locked": float(detail.get("frozenBal") or 0),
+                    "source": "live",
+                    "exchange": "OKX",
+                    "demo": bool(conn.okx_demo),
+                })
+        return positions
 
     async def _fetch_binance_positions(self, conn: AdapterConnection) -> List[Dict[str, Any]]:
         """Query Binance SPOT account and return non-zero balances as positions."""

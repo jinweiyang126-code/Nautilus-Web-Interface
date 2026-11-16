@@ -91,10 +91,10 @@ _ADAPTERS: list[dict] = [
     {
         "id": "okx", "name": "OKX", "type": "Crypto Exchange",
         "category": "Crypto",
-        "description": "OKX spot, futures, options and DeFi trading",
-        "docs_url": "https://nautilustrader.io/docs/nightly/integrations/okx",
+        "description": "OKX Demo Trading (default) + spot live — requires API passphrase",
+        "docs_url": "https://www.okx.com/docs-v5/en/#overview-demo-trading-services",
         "supports_live": True, "supports_backtest": True,
-        "credential_fields": ["api_key", "api_secret"],
+        "credential_fields": ["api_key", "api_secret", "passphrase"],
     },
     {
         "id": "polymarket", "name": "Polymarket", "type": "Prediction Market",
@@ -122,6 +122,10 @@ _ADAPTER_BY_ID = {a["id"]: a for a in _ADAPTERS}
 class AdapterConnectRequest(BaseModel):
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
+    passphrase: Optional[str] = None
+    # OKX Demo Trading (x-simulated-trading: 1). Default True for safety.
+    demo: Optional[bool] = None
+    testnet: Optional[bool] = None  # UI alias for demo/paper
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -155,6 +159,8 @@ async def _enrich(adapter: dict) -> dict:
         "has_credentials": has_credentials,
         "api_key_masked": api_key_masked,
         "connection_id": extra.get("connection_id"),
+        "demo": extra.get("demo"),
+        "verified": extra.get("verified"),
     }
 
 
@@ -196,9 +202,10 @@ async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: d
     import re as _re
     api_key = (req.api_key or "").strip().replace("\x00", "")
     api_secret = (req.api_secret or "").strip().replace("\x00", "")
+    passphrase = (req.passphrase or "").strip().replace("\x00", "")
 
     # Reject oversized credentials
-    if len(api_key) > 512 or len(api_secret) > 512:
+    if len(api_key) > 512 or len(api_secret) > 512 or len(passphrase) > 512:
         raise HTTPException(status_code=400, detail="Credential too long (max 512 chars)")
 
     # Minimum-length guard (real exchange keys are always >= 8 chars)
@@ -206,6 +213,8 @@ async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: d
         raise HTTPException(status_code=400, detail="api_key too short (min 8 chars)")
     if api_secret and len(api_secret) < 8:
         raise HTTPException(status_code=400, detail="api_secret too short (min 8 chars)")
+    if adapter_id == "okx" and passphrase and len(passphrase) < 4:
+        raise HTTPException(status_code=400, detail="passphrase too short (min 4 chars)")
 
     # Allow only printable ASCII (no control characters beyond what was already stripped)
     _safe_re = _re.compile(r'^[\x20-\x7E]+$')
@@ -213,11 +222,22 @@ async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: d
         raise HTTPException(status_code=400, detail="api_key contains invalid characters")
     if api_secret and not _safe_re.match(api_secret):
         raise HTTPException(status_code=400, detail="api_secret contains invalid characters")
+    if passphrase and not _safe_re.match(passphrase):
+        raise HTTPException(status_code=400, detail="passphrase contains invalid characters")
 
     # Encrypt credentials before storing
     from credential_utils import encrypt_credential
     encrypted_key = encrypt_credential(api_key) if api_key else ""
     encrypted_secret = encrypt_credential(api_secret) if api_secret else ""
+    encrypted_passphrase = encrypt_credential(passphrase) if passphrase else ""
+
+    # Demo / paper: explicit demo flag, else testnet checkbox, else OKX defaults to Demo
+    if req.demo is not None:
+        use_demo = bool(req.demo)
+    elif req.testnet is not None:
+        use_demo = bool(req.testnet)
+    else:
+        use_demo = adapter_id == "okx"
 
     # Mark as "connecting" before attempting real connection
     await database.upsert_adapter_config(
@@ -225,21 +245,40 @@ async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: d
         status="connecting",
         api_key=encrypted_key,
         api_secret=encrypted_secret,
+        extra_config={
+            "passphrase": encrypted_passphrase,
+            "demo": use_demo,
+        } if adapter_id == "okx" else {},
     )
 
     # Try to activate live trading node
     connection_id = None
+    verified = None
     try:
         if adapter_id in ("binance", "binance_futures"):
             result = await live_manager.connect_binance(api_key, api_secret)
             connection_id = result.get("connection_id")
+            verified = result.get("verified")
         elif adapter_id == "bybit":
             result = await live_manager.connect_bybit(api_key, api_secret)
             connection_id = result.get("connection_id")
+            verified = result.get("verified")
+        elif adapter_id == "okx":
+            result = await live_manager.connect_okx(
+                api_key, api_secret, passphrase, demo=use_demo
+            )
+            connection_id = result.get("connection_id")
+            verified = result.get("verified")
         # Other adapters: store credentials only (no live node yet)
 
-        import json
-        extra = {"connection_id": connection_id} if connection_id else {}
+        extra: dict = {}
+        if connection_id:
+            extra["connection_id"] = connection_id
+        if adapter_id == "okx":
+            extra["passphrase"] = encrypted_passphrase
+            extra["demo"] = use_demo
+            if verified is not None:
+                extra["verified"] = verified
         await database.upsert_adapter_config(
             adapter_id=adapter_id,
             status="connected",
@@ -247,12 +286,15 @@ async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: d
             api_secret=encrypted_secret,
             extra_config=extra,
         )
+        mode = "Demo" if (adapter_id == "okx" and use_demo) else "Live"
         return {
             "success": True,
             "adapter_id": adapter_id,
             "status": "connected",
             "connection_id": connection_id,
-            "message": f"Adapter '{meta['name']}' connected.",
+            "verified": verified,
+            "demo": use_demo if adapter_id == "okx" else None,
+            "message": f"Adapter '{meta['name']}' connected ({mode}).",
             "last_connected": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
@@ -261,6 +303,10 @@ async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: d
             status="error",
             api_key=encrypted_key,
             api_secret=encrypted_secret,
+            extra_config={
+                "passphrase": encrypted_passphrase,
+                "demo": use_demo,
+            } if adapter_id == "okx" else {},
         )
         raise HTTPException(status_code=502, detail=f"Connection failed: {str(exc)}")
 
