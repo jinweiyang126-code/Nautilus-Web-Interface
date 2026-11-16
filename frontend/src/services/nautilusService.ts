@@ -6,6 +6,8 @@ export interface EngineInfo {
   engine_type: string;
   is_running: boolean;
   strategies_count: number;
+  is_initialized?: boolean;
+  catalog_path?: string;
 }
 
 export interface Instrument {
@@ -86,7 +88,12 @@ export const nautilusService = {
 
   // System operations
   async initialize() {
-    return api.post<{ success: boolean; message: string }>('/api/nautilus/initialize', {});
+    return api.post<{
+      success: boolean;
+      message: string;
+      catalog_path?: string;
+      instruments_count?: number;
+    }>('/api/nautilus/initialize', {});
   },
 
   async getSystemInfo() {

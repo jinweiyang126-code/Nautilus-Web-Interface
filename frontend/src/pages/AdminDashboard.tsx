@@ -2,6 +2,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useNotification } from "@/contexts/NotificationContext";
+import { ApiError } from "@/lib/api";
 import { useEffect, useState } from "react";
 import nautilusService, { type EngineInfo } from "@/services/nautilusService";
 
@@ -9,6 +10,7 @@ export default function AdminDashboard() {
   const { success, error, info } = useNotification();
   const [engineInfo, setEngineInfo] = useState<EngineInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initializing, setInitializing] = useState(false);
 
   useEffect(() => {
     loadEngineInfo();
@@ -19,12 +21,39 @@ export default function AdminDashboard() {
       setLoading(true);
       const data = await nautilusService.getEngineInfo();
       setEngineInfo(data);
-      success('Connected to Nautilus Trader!');
     } catch (err) {
       error('Failed to connect to Nautilus API');
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleInitialize = async () => {
+    setInitializing(true);
+    info('正在初始化引擎并加载数据目录…');
+    try {
+      const result = await nautilusService.initialize();
+      const parts = [result.message || '引擎初始化成功'];
+      if (typeof result.instruments_count === 'number') {
+        parts.push(`${result.instruments_count} instruments`);
+      }
+      if (result.catalog_path) {
+        parts.push(result.catalog_path);
+      }
+      success(parts.join(' · '));
+      await loadEngineInfo();
+    } catch (err) {
+      const detail =
+        err instanceof ApiError
+          ? (typeof err.detail === 'string' ? err.detail : err.message)
+          : err instanceof Error
+            ? err.message
+            : '初始化失败';
+      error(detail);
+      console.error(err);
+    } finally {
+      setInitializing(false);
     }
   };
 
@@ -37,6 +66,8 @@ export default function AdminDashboard() {
     loadEngineInfo();
   };
 
+  const initialized = Boolean(engineInfo?.is_initialized);
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -46,11 +77,15 @@ export default function AdminDashboard() {
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Nautilus Admin Panel</h1>
               <p className="text-sm text-gray-600 mt-1">
-                {loading ? '⏳ Connecting...' : engineInfo ? `✅ Connected: ${engineInfo.trader_id}` : '❌ Disconnected'}
+                {loading
+                  ? '⏳ Connecting...'
+                  : engineInfo
+                    ? `✅ Connected: ${engineInfo.trader_id} · 引擎: ${initialized ? '已初始化' : '未初始化'}`
+                    : '❌ Disconnected'}
               </p>
             </div>
             <div className="flex gap-2">
-              <Button onClick={handleRefresh} disabled={loading}>
+              <Button onClick={handleRefresh} disabled={loading || initializing}>
                 {loading ? 'Loading...' : '🔄 Refresh'}
               </Button>
               <Button variant="outline" onClick={() => window.location.href = '/'}>
@@ -67,6 +102,32 @@ export default function AdminDashboard() {
           <h2 className="text-3xl font-bold text-gray-900 mb-2">Dashboard</h2>
           <p className="text-gray-600">Welcome to Nautilus Trader Admin Interface</p>
         </div>
+
+        {/* Engine initialize — required before Real Data backtests */}
+        <Card className="mb-8 border-blue-200">
+          <CardHeader>
+            <CardTitle>🚀 引擎控制</CardTitle>
+            <CardDescription>
+              真实数据回测前需先初始化引擎（加载 catalog）。演示 / Sweep 不依赖此步骤。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col sm:flex-row sm:items-center gap-4">
+            <div className="flex-1 text-sm text-gray-700">
+              <p>
+                状态：{' '}
+                <span className={initialized ? 'text-green-600 font-medium' : 'text-amber-600 font-medium'}>
+                  {loading ? '查询中…' : initialized ? '已初始化' : '未初始化'}
+                </span>
+              </p>
+              {engineInfo?.catalog_path && (
+                <p className="text-gray-500 mt-1 break-all">catalog: {engineInfo.catalog_path}</p>
+              )}
+            </div>
+            <Button onClick={handleInitialize} disabled={initializing || loading}>
+              {initializing ? '初始化中…' : '初始化引擎'}
+            </Button>
+          </CardContent>
+        </Card>
 
         {/* Stats Grid */}
         <div className="grid md:grid-cols-4 gap-6 mb-8">
@@ -93,8 +154,10 @@ export default function AdminDashboard() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardDescription>Status</CardDescription>
-              <CardTitle className="text-3xl text-green-600">Live</CardTitle>
+              <CardDescription>Engine</CardDescription>
+              <CardTitle className={`text-3xl ${initialized ? 'text-green-600' : 'text-amber-600'}`}>
+                {initialized ? 'Ready' : 'Idle'}
+              </CardTitle>
             </CardHeader>
           </Card>
         </div>
