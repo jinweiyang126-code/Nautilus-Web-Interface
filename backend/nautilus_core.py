@@ -515,8 +515,9 @@ class NautilusTradingSystem:
 
             engine.add_instrument(instrument)
 
-            # Generate synthetic bar data (geometric brownian motion with slight upward drift)
-            bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-BID-INTERNAL")
+            # Generate synthetic bar data (geometric brownian motion with slight upward drift).
+            # Must be EXTERNAL: bars are pre-built and fed via engine.add_data(), not aggregated from ticks.
+            bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-BID-EXTERNAL")
             bars = []
             current_price = 1.10000
             start_ts = 1_609_459_200_000_000_000  # 2021-01-01 00:00:00 UTC (nanoseconds)

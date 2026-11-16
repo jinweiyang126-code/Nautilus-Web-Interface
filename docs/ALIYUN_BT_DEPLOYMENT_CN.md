@@ -184,7 +184,7 @@ docker compose down
 | 项 | 值 |
 |----|-----|
 | 代理名称 | `nautilus-web` |
-| 目标 URL | `http://127.0.0.1:3000` |
+| 目标 URL | `http://127.0.0.1:3000`（**不要**写成 `3000/`，端口后不能有斜杠） |
 | 发送域名 | `$host` |
 | 代理目录 | `/` |
 
@@ -193,9 +193,24 @@ docker compose down
 | 项 | 值 |
 |----|-----|
 | 代理名称 | `nautilus-api` |
-| 目标 URL | `http://127.0.0.1:8000` |
+| 目标 URL | `http://127.0.0.1:8000`（**不要**写成 `8000/`） |
 | 发送域名 | `$host` |
 | 代理目录 | `/api` |
+
+打开该反代「配置文件」，确认是下面这种写法（保留 `/api` 前缀，否则登录会报 `Not Found`）：
+
+```nginx
+location ^~ /api
+{
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_http_version 1.1;
+}
+```
+
+错误示例：`proxy_pass http://127.0.0.1:8000/;`（末尾有 `/`）会把 `/api/auth/login` 剥成 `/auth/login` → 404。
 
 ### 5.3 WebSocket
 
@@ -268,6 +283,29 @@ docker compose ps
 ---
 
 ## 9. 常见问题
+
+### Demo 回测 HTTP 500：`bar_type.aggregation_source ... was not equal to required source`
+
+原因：Demo 用 `engine.add_data(bars)` 喂入已生成的 K 线时，BarType 必须是 `EXTERNAL`，不能是 `INTERNAL`。
+
+仓库已修复为 `...-1-MINUTE-BID-EXTERNAL`。服务器更新：
+
+```bash
+cd /root/nautilus-web
+git pull origin main
+docker compose up -d --build backend
+```
+
+### 宝塔反代报错：`invalid port in upstream "127.0.0.1:3000/"`
+
+目标 URL 端口后多了 `/`。应填：
+
+```text
+http://127.0.0.1:3000
+http://127.0.0.1:8000
+```
+
+不要填 `http://127.0.0.1:3000/`。改完后保存，再重载 Nginx。
 
 ### 前端构建失败：`npm ci` / `ERESOLVE`（vite peer 依赖）
 
