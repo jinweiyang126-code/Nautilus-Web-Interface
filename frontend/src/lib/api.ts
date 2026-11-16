@@ -67,15 +67,25 @@ async function request<T>(
         const text = await response.text();
         let detail: string | undefined;
         try {
-          detail = JSON.parse(text)?.detail;
+          const parsed = JSON.parse(text)?.detail;
+          if (typeof parsed === 'string') {
+            detail = parsed;
+          } else if (Array.isArray(parsed)) {
+            detail = parsed
+              .map((e: { msg?: string; loc?: unknown[] }) => e?.msg || JSON.stringify(e))
+              .join('; ');
+          } else if (parsed != null) {
+            detail = JSON.stringify(parsed);
+          }
         } catch {
           detail = text;
         }
+        const message = detail?.trim() ? detail : `HTTP ${response.status}`;
         // 4xx errors are not retried — they indicate client errors
         if (response.status < 500) {
-          throw new ApiError(response.status, `HTTP ${response.status}`, detail);
+          throw new ApiError(response.status, message, detail);
         }
-        lastError = new ApiError(response.status, `HTTP ${response.status}`, detail);
+        lastError = new ApiError(response.status, message, detail);
       } else {
         return response.json() as Promise<T>;
       }

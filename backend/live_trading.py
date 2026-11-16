@@ -355,6 +355,47 @@ class LiveTradingManager:
                 self._is_active = False
             return {"success": True}
 
+    async def ensure_connected_from_db(self) -> bool:
+        """
+        If no in-memory adapter is active, try restoring from adapter_configs
+        rows marked connected (survives process restart when ENCRYPTION_KEY is set).
+        """
+        if self.is_connected():
+            return True
+
+        import json
+        import database
+        from credential_utils import decrypt_credential
+
+        for adapter_id in ("okx", "binance", "binance_futures", "bybit"):
+            cfg = await database.get_adapter_config(adapter_id)
+            if not cfg or cfg.get("status") != "connected":
+                continue
+            api_key = decrypt_credential(cfg.get("api_key") or "")
+            api_secret = decrypt_credential(cfg.get("api_secret") or "")
+            if not api_key or not api_secret:
+                continue
+            try:
+                extra = json.loads(cfg.get("extra_config") or "{}")
+            except Exception:
+                extra = {}
+            try:
+                if adapter_id == "okx":
+                    passphrase = decrypt_credential(extra.get("passphrase") or "")
+                    if not passphrase:
+                        continue
+                    demo = bool(extra.get("demo", True))
+                    await self.connect_okx(api_key, api_secret, passphrase, demo=demo)
+                elif adapter_id in ("binance", "binance_futures"):
+                    await self.connect_binance(api_key, api_secret)
+                elif adapter_id == "bybit":
+                    await self.connect_bybit(api_key, api_secret)
+                if self.is_connected():
+                    return True
+            except Exception as exc:
+                logger.warning("Failed to restore %s from DB: %s", adapter_id, exc)
+        return self.is_connected()
+
     # ── Order management (via Nautilus adapter HTTP APIs) ─────────────────────
 
     async def submit_order(self, order: Dict[str, Any]) -> Dict[str, Any]:

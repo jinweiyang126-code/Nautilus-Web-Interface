@@ -176,6 +176,9 @@ class OkxRestClient:
 
         payload = await self.request("POST", "/api/v5/trade/order", body=body)
         data = (payload.get("data") or [{}])[0]
+        scode = str(data.get("sCode") or "0")
+        if scode not in ("0", ""):
+            raise OkxApiError(f"OKX order rejected (sCode={scode}): {data.get('sMsg') or data}")
         return data
 
     async def cancel_order(

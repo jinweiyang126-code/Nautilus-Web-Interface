@@ -21,11 +21,11 @@ export default function OrdersPage() {
   const [orderError, setOrderError] = useState<string | null>(null);
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
   const [newOrder, setNewOrder] = useState({
-    instrument: 'BTCUSDT',
+    instrument: 'BTC-USDT',
     side: 'BUY' as 'BUY' | 'SELL',
     type: 'LIMIT' as 'MARKET' | 'LIMIT' | 'STOP',
     quantity: 0.001,
-    price: 0
+    price: 50000
   });
   const { lastMessage } = useWebSocket();
   const prevMessageRef = useRef(lastMessage);
@@ -65,7 +65,7 @@ export default function OrdersPage() {
     try {
       await api.post('/api/orders', newOrder);
       setShowNewOrderModal(false);
-      setNewOrder({ instrument: 'BTCUSDT', side: 'BUY', type: 'LIMIT', quantity: 0.001, price: 0 });
+      setNewOrder({ instrument: 'BTC-USDT', side: 'BUY', type: 'LIMIT', quantity: 0.001, price: 50000 });
       fetchOrders();
     } catch (error) {
       setOrderError(error instanceof Error ? error.message : 'Failed to create order');
@@ -217,7 +217,7 @@ export default function OrdersPage() {
                     value={newOrder.instrument}
                     onChange={(e) => setNewOrder({ ...newOrder, instrument: e.target.value })}
                     className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                    placeholder="BTCUSDT"
+                    placeholder="BTC-USDT"
                   />
                 </div>
 

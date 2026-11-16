@@ -40,6 +40,9 @@ async def list_orders():
 
 @router.post("/orders")
 async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_current_user)):
+    if req.type == "LIMIT" and (req.price is None or req.price <= 0):
+        raise HTTPException(status_code=400, detail="LIMIT orders require price > 0")
+
     order_dict = req.model_dump()
 
     # 1. Risk check — runs before anything else
@@ -48,7 +51,12 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
     except RiskCheckError:
         raise  # Re-raise with 422
 
-    # 2. Require adapter for live-exchange instruments when no risk limits configured.
+    # 2. Restore in-memory adapter session from DB if UI still shows Connected
+    # but the process restarted (or live_manager was cleared).
+    if not live_manager.is_connected() and not req.instrument.endswith(".SIM"):
+        await live_manager.ensure_connected_from_db()
+
+    # 3. Require adapter for live-exchange instruments when no risk limits configured.
     # When risk limits have never been explicitly set, the system is in pristine/demo
     # mode and live-instrument orders need a connected adapter.
     # Once limits are explicitly configured, paper trading is permitted on any instrument.
@@ -57,19 +65,32 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         if not limits_configured:
             raise HTTPException(
                 status_code=400,
-                detail="No adapter connected. Connect an exchange adapter before placing live orders.",
+                detail=(
+                    "No live adapter session. Open Adapters → OKX → Disconnect, "
+                    "then Connect again with Demo API Key / Secret / Passphrase, "
+                    "and retry the order."
+                ),
             )
 
-    # 3. Live routing when adapter is connected
+    # 4. Live routing when adapter is connected
     exchange_order_id = None
     if live_manager.is_connected():
         try:
             exchange_result = await live_manager.submit_order(order_dict)
             if isinstance(exchange_result, dict):
+                # Surface OKX per-order rejection (sCode != 0)
+                scode = str(exchange_result.get("sCode") or "0")
+                if scode not in ("0", ""):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"OKX rejected order (sCode={scode}): {exchange_result.get('sMsg') or 'unknown'}",
+                    )
                 exchange_order_id = (
                     exchange_result.get("exchange_order_id")
                     or exchange_result.get("order_id")
                 )
+        except HTTPException:
+            raise
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
