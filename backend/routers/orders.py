@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import database
@@ -20,6 +21,15 @@ class OrderCreateRequest(BaseModel):
     quantity: float = Field(..., gt=0)
     price: Optional[float] = Field(None, ge=0)
     leverage: float = Field(1.0, ge=1.0, le=1000.0)
+
+
+def _local_order_id() -> str:
+    return f"ORD-{uuid4().hex[:8].upper()}"
+
+
+def _okx_cl_ord_id(local_id: str) -> str:
+    # OKX clOrdId: 1-32 alphanumeric only (no hyphens)
+    return "".join(ch for ch in local_id if ch.isalnum())[:32]
 
 
 @router.get("/orders")
@@ -44,6 +54,8 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail="LIMIT orders require price > 0")
 
     order_dict = req.model_dump()
+    local_id = _local_order_id()
+    order_dict["client_order_id"] = _okx_cl_ord_id(local_id)
 
     # 1. Risk check — runs before anything else
     try:
@@ -57,9 +69,6 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         await live_manager.ensure_connected_from_db()
 
     # 3. Require adapter for live-exchange instruments when no risk limits configured.
-    # When risk limits have never been explicitly set, the system is in pristine/demo
-    # mode and live-instrument orders need a connected adapter.
-    # Once limits are explicitly configured, paper trading is permitted on any instrument.
     if not live_manager.is_connected() and not req.instrument.endswith(".SIM"):
         limits_configured = await database.risk_limits_explicitly_set()
         if not limits_configured:
@@ -78,7 +87,6 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         try:
             exchange_result = await live_manager.submit_order(order_dict)
             if isinstance(exchange_result, dict):
-                # Surface OKX per-order rejection (sCode != 0)
                 scode = str(exchange_result.get("sCode") or "0")
                 if scode not in ("0", ""):
                     raise HTTPException(
@@ -96,19 +104,24 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Exchange error: {str(exc)}")
 
-    # 3. Persist order to DB (paper mode when no adapter, live mode otherwise)
+    # 5. Persist order (include venue order id for later cancel)
     order = await database.create_order(
         instrument=req.instrument,
         side=req.side,
         order_type=req.type,
         quantity=req.quantity,
         price=req.price,
+        exchange_order_id=exchange_order_id,
+        order_id=local_id,
     )
     await database.log_action(
         action="order_created",
         user_id=_user.get("sub", ""),
         resource=f"order:{order['id']}",
-        details=f"instrument={req.instrument} side={req.side} qty={req.quantity} price={req.price}",
+        details=(
+            f"instrument={req.instrument} side={req.side} qty={req.quantity} "
+            f"price={req.price} exchange_order_id={exchange_order_id}"
+        ),
     )
     result: Dict[str, Any] = {"success": True, "order": order}
     if exchange_order_id:
@@ -118,28 +131,60 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
 
 @router.delete("/orders/{order_id}")
 async def cancel_order(order_id: str, _user: dict = Depends(get_current_user)):
-    # If adapter is connected, also cancel on exchange
-    if live_manager.is_connected():
-        try:
-            await live_manager.cancel_order(order_id)
-        except Exception:
-            pass  # Exchange cancel failure should not prevent DB cancel
+    row = await database.get_order(order_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
+    if row.get("status") != "PENDING":
+        raise HTTPException(status_code=400, detail=f"Order {order_id} is already {row.get('status')}")
+
+    venue_id = (row.get("exchange_order_id") or "").strip()
+    instrument = row.get("instrument") or "BTC-USDT"
+
+    if venue_id or not str(instrument).endswith(".SIM"):
+        if not live_manager.is_connected():
+            await live_manager.ensure_connected_from_db()
+        if live_manager.is_connected():
+            try:
+                # Prefer OKX ordId; fall back to alphanumeric client id
+                cancel_id = venue_id or _okx_cl_ord_id(order_id)
+                result = await live_manager.cancel_order(cancel_id, symbol=instrument)
+                if isinstance(result, dict) and result.get("success") is False:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Exchange cancel failed: {result.get('error') or result}",
+                    )
+                scode = str((result or {}).get("sCode") or "0")
+                if scode not in ("0", ""):
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"OKX cancel rejected (sCode={scode})",
+                    )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Failed to cancel on exchange: {exc}. "
+                        "Local status was NOT changed — cancel again or use OKX App."
+                    ),
+                ) from exc
+        elif venue_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No live adapter session to cancel on OKX. "
+                    "Reconnect OKX in Adapters, or cancel in the OKX App."
+                ),
+            )
 
     cancelled = await database.cancel_order(order_id)
     if not cancelled:
-        # Still return success if connected (exchange order may not be in DB)
-        if live_manager.is_connected():
-            await database.log_action(
-                action="order_cancelled",
-                user_id=_user.get("sub", ""),
-                resource=f"order:{order_id}",
-                details="cancel sent to exchange",
-            )
-            return {"success": True, "message": f"Order {order_id} cancel sent to exchange"}
         raise HTTPException(status_code=404, detail=f"Order {order_id} not found or already closed")
     await database.log_action(
         action="order_cancelled",
         user_id=_user.get("sub", ""),
         resource=f"order:{order_id}",
+        details=f"exchange_order_id={venue_id}",
     )
     return {"success": True, "message": f"Order {order_id} cancelled"}

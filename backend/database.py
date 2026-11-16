@@ -238,9 +238,11 @@ async def create_order(
     order_type: str = "MARKET",
     quantity: float = 0.0,
     price: Optional[float] = None,
+    exchange_order_id: Optional[str] = None,
+    order_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     order = {
-        "id": f"ORD-{uuid.uuid4().hex[:8].upper()}",
+        "id": order_id or f"ORD-{uuid.uuid4().hex[:8].upper()}",
         "instrument": instrument,
         "side": side,
         "type": order_type,
@@ -249,17 +251,28 @@ async def create_order(
         "status": "PENDING",
         "filled_qty": 0.0,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "exchange_order_id": exchange_order_id,
     }
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO orders (id, instrument, side, type, quantity, price, status, filled_qty, timestamp)
-            VALUES (:id, :instrument, :side, :type, :quantity, :price, :status, :filled_qty, :timestamp)
+            INSERT INTO orders
+                (id, instrument, side, type, quantity, price, status, filled_qty, timestamp, exchange_order_id)
+            VALUES
+                (:id, :instrument, :side, :type, :quantity, :price, :status, :filled_qty, :timestamp, :exchange_order_id)
             """,
             order,
         )
         await db.commit()
     return order
+
+
+async def get_order(order_id: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM orders WHERE id=?", (order_id,)) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row else None
 
 
 async def cancel_order(order_id: str) -> bool:

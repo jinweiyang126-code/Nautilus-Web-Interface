@@ -569,17 +569,29 @@ class LiveTradingManager:
                     return {"success": True, "order_id": order_id}
                 elif adapter_id == "okx" and conn.okx_client:
                     inst_id = self._to_okx_inst_id(symbol)
+                    # Prefer venue ordId (digits); otherwise treat as client order id
+                    use_ord_id = order_id.isdigit()
                     result = await conn.okx_client.cancel_order(
                         inst_id=inst_id,
-                        ord_id=order_id if order_id.isdigit() else None,
-                        cl_ord_id=None if order_id.isdigit() else order_id,
+                        ord_id=order_id if use_ord_id else None,
+                        cl_ord_id=None if use_ord_id else "".join(
+                            ch for ch in order_id if ch.isalnum()
+                        )[:32],
                     )
+                    scode = str(result.get("sCode") or "0")
+                    if scode not in ("0", ""):
+                        return {
+                            "success": False,
+                            "order_id": order_id,
+                            "error": f"sCode={scode}: {result.get('sMsg')}",
+                            "sCode": scode,
+                        }
                     return {
                         "success": True,
                         "order_id": order_id,
                         "status": "canceled",
                         "exchange": "OKX",
-                        "sCode": result.get("sCode"),
+                        "sCode": scode,
                     }
             except Exception as exc:
                 logger.warning("Exchange cancel order failed (%s): %s", adapter_id, exc)
