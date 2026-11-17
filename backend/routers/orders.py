@@ -148,13 +148,18 @@ async def cancel_order(order_id: str, _user: dict = Depends(get_current_user)):
                 # Prefer OKX ordId; fall back to alphanumeric client id
                 cancel_id = venue_id or _okx_cl_ord_id(order_id)
                 result = await live_manager.cancel_order(cancel_id, symbol=instrument)
+                err_text = ""
                 if isinstance(result, dict) and result.get("success") is False:
+                    err_text = str(result.get("error") or result)
+                scode = str((result or {}).get("sCode") or "0")
+                # 51400: already filled / canceled / does not exist → treat as done
+                already_gone = "51400" in err_text or scode == "51400"
+                if err_text and not already_gone:
                     raise HTTPException(
                         status_code=502,
-                        detail=f"Exchange cancel failed: {result.get('error') or result}",
+                        detail=f"Exchange cancel failed: {err_text}",
                     )
-                scode = str((result or {}).get("sCode") or "0")
-                if scode not in ("0", ""):
+                if scode not in ("0", "", "51400") and not already_gone:
                     raise HTTPException(
                         status_code=502,
                         detail=f"OKX cancel rejected (sCode={scode})",
@@ -162,13 +167,16 @@ async def cancel_order(order_id: str, _user: dict = Depends(get_current_user)):
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        f"Failed to cancel on exchange: {exc}. "
-                        "Local status was NOT changed — cancel again or use OKX App."
-                    ),
-                ) from exc
+                err = str(exc)
+                # Idempotent: OKX says order is already gone
+                if "51400" not in err:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"Failed to cancel on exchange: {exc}. "
+                            "Local status was NOT changed — cancel again or use OKX App."
+                        ),
+                    ) from exc
         elif venue_id:
             raise HTTPException(
                 status_code=400,
