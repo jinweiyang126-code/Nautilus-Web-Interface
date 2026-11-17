@@ -182,6 +182,7 @@ async def init_db() -> None:
             "ALTER TABLE orders ADD COLUMN pnl REAL DEFAULT 0",
             "ALTER TABLE orders ADD COLUMN strategy_id TEXT",
             "ALTER TABLE orders ADD COLUMN exchange_order_id TEXT",
+            "ALTER TABLE orders ADD COLUMN exchange TEXT",
             "ALTER TABLE users ADD COLUMN totp_secret TEXT",
             "ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0",
         ]:
@@ -242,6 +243,7 @@ async def create_order(
     order_id: Optional[str] = None,
     status: str = "PENDING",
     filled_qty: float = 0.0,
+    exchange: Optional[str] = None,
 ) -> Dict[str, Any]:
     order = {
         "id": order_id or f"ORD-{uuid.uuid4().hex[:8].upper()}",
@@ -254,14 +256,15 @@ async def create_order(
         "filled_qty": filled_qty,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "exchange_order_id": exchange_order_id,
+        "exchange": exchange,
     }
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             INSERT INTO orders
-                (id, instrument, side, type, quantity, price, status, filled_qty, timestamp, exchange_order_id)
+                (id, instrument, side, type, quantity, price, status, filled_qty, timestamp, exchange_order_id, exchange)
             VALUES
-                (:id, :instrument, :side, :type, :quantity, :price, :status, :filled_qty, :timestamp, :exchange_order_id)
+                (:id, :instrument, :side, :type, :quantity, :price, :status, :filled_qty, :timestamp, :exchange_order_id, :exchange)
             """,
             order,
         )

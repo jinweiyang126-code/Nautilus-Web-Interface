@@ -109,6 +109,7 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
 
     # 4. Live routing when adapter is connected
     exchange_order_id = None
+    exchange_name = None
     local_status = "PENDING"
     filled_qty = 0.0
     persist_price = req.price
@@ -126,13 +127,14 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
                     exchange_result.get("exchange_order_id")
                     or exchange_result.get("order_id")
                 )
+                exchange_name = exchange_result.get("exchange")
                 status_raw = str(exchange_result.get("status") or "PENDING").upper()
                 if status_raw in ("FILLED", "CANCELLED", "PENDING"):
                     local_status = status_raw
                 filled_qty = float(exchange_result.get("filled_qty") or 0)
                 if exchange_result.get("price") is not None:
                     persist_price = float(exchange_result["price"])
-                # Market default: if OKX accepted but state unknown, treat as filled
+                # Market default: if venue accepted but state unknown, treat as filled
                 if req.type == "MARKET" and local_status == "PENDING" and exchange_order_id:
                     local_status = "FILLED"
                     filled_qty = float(req.quantity)
@@ -143,7 +145,7 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Exchange error: {str(exc)}")
 
-    # 5. Persist order (include venue order id + fill status)
+    # 5. Persist order (include venue order id + exchange + fill status)
     order = await database.create_order(
         instrument=req.instrument,
         side=req.side,
@@ -154,6 +156,7 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         order_id=local_id,
         status=local_status,
         filled_qty=filled_qty,
+        exchange=exchange_name,
     )
     await database.log_action(
         action="order_created",

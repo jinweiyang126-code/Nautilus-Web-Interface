@@ -12,6 +12,8 @@ interface Order {
   status: 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED';
   filled_qty: number;
   timestamp: string;
+  exchange?: string | null;
+  exchange_order_id?: string | null;
 }
 
 export default function OrdersPage() {
@@ -153,39 +155,59 @@ export default function OrdersPage() {
               <table className="w-full">
                 <thead className="bg-gray-50 border-b-2 border-gray-200">
                   <tr>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Order ID</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Instrument</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Side</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Type</th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Quantity</th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Price</th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Filled</th>
-                    <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Status</th>
-                    <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Actions</th>
+                    <th className="px-4 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Order ID</th>
+                    <th className="px-4 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Exchange</th>
+                    <th className="px-4 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Exchange Order ID</th>
+                    <th className="px-4 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Instrument</th>
+                    <th className="px-4 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Side</th>
+                    <th className="px-4 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Type</th>
+                    <th className="px-4 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Quantity</th>
+                    <th className="px-4 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Price</th>
+                    <th className="px-4 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Filled</th>
+                    <th className="px-4 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Status</th>
+                    <th className="px-4 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
                   {orders.map((order) => (
                     <tr key={order.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 text-sm font-mono text-gray-900">{order.id}</td>
-                      <td className="px-6 py-4 text-sm font-semibold text-gray-900">{order.instrument}</td>
-                      <td className="px-6 py-4 text-sm">
+                      <td className="px-4 py-4 text-sm font-mono text-gray-900">{order.id}</td>
+                      <td className="px-4 py-4 text-sm text-gray-700">
+                        {order.exchange ? (
+                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
+                            {order.exchange}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 text-sm font-mono text-gray-700 max-w-[12rem]">
+                        {order.exchange_order_id ? (
+                          <span className="block truncate" title={order.exchange_order_id}>
+                            {order.exchange_order_id}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 text-sm font-semibold text-gray-900">{order.instrument}</td>
+                      <td className="px-4 py-4 text-sm">
                         <span className={`font-bold ${getSideColor(order.side)}`}>{order.side}</span>
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-600">{order.type}</td>
-                      <td className="px-6 py-4 text-sm text-right text-gray-900">{order.quantity}</td>
-                      <td className="px-6 py-4 text-sm text-right text-gray-900">
-                        {order.price ? `$${order.price.toFixed(2)}` : '-'}
+                      <td className="px-4 py-4 text-sm text-gray-600">{order.type}</td>
+                      <td className="px-4 py-4 text-sm text-right text-gray-900">{order.quantity}</td>
+                      <td className="px-4 py-4 text-sm text-right text-gray-900">
+                        {order.price ? `$${Number(order.price).toFixed(2)}` : '-'}
                       </td>
-                      <td className="px-6 py-4 text-sm text-right text-gray-600">
+                      <td className="px-4 py-4 text-sm text-right text-gray-600">
                         {order.filled_qty} / {order.quantity}
                       </td>
-                      <td className="px-6 py-4 text-center">
+                      <td className="px-4 py-4 text-center">
                         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(order.status)}`}>
                           {order.status}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-center">
+                      <td className="px-4 py-4 text-center">
                         {order.status === 'PENDING' && (
                           <button
                             onClick={() => handleCancelOrder(order.id)}
