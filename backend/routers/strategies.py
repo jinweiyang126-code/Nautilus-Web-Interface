@@ -87,13 +87,70 @@ class StrategyCreateRequest(BaseModel):
 
 
 class StrategyStartRequest(BaseModel):
-    """Optional body for POST /strategies/{id}/start."""
+    """Optional body for POST /strategies/{id}/start.
+
+    Live order size/instrument come from the strategy config (trade_size,
+    instrument_id / live_instrument). Request fields only override when set.
+    """
     live: bool = False
     exchange: str = "okx"
-    instrument: str = "BTC-USDT"
-    quantity: float = Field(0.001, gt=0, le=100)
+    instrument: Optional[str] = None
+    quantity: Optional[float] = Field(None, gt=0, le=1000)
     bar: str = "1m"
     interval_sec: int = Field(60, ge=15, le=3600)
+
+
+def _resolve_live_instrument(config: Dict[str, Any], override: Optional[str] = None) -> str:
+    """Pick OKX spot instrument from request override or strategy config."""
+    if override and str(override).strip():
+        return str(override).strip().replace("/", "-").upper().split(".")[0]
+    for key in ("live_instrument", "instrument_id", "instrument"):
+        raw = str(config.get(key) or "").strip()
+        if not raw:
+            continue
+        # Skip backtest SIM symbols — not tradeable on OKX
+        if ".SIM" in raw.upper() or raw.upper().startswith("EUR/USD"):
+            continue
+        return raw.replace("/", "-").upper().split(".")[0]
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Strategy has no live instrument. Set instrument_id (e.g. BTC-USDT) "
+            "or live_instrument on the strategy before starting OKX Demo trading."
+        ),
+    )
+
+
+def _resolve_live_quantity(config: Dict[str, Any], override: Optional[float] = None) -> float:
+    """Order size must come from strategy trade_size (or explicit override)."""
+    if override is not None:
+        qty = float(override)
+    else:
+        raw = config.get("trade_size")
+        if raw is None or str(raw).strip() == "":
+            raise HTTPException(
+                status_code=400,
+                detail="Strategy trade_size is required for live trading. Set it when creating the strategy.",
+            )
+        try:
+            qty = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid strategy trade_size: {raw!r}",
+            ) from exc
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="trade_size must be > 0")
+    # FX backtest defaults (e.g. 100000) are not valid OKX BTC base sizes
+    if qty > 100:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"trade_size={qty} looks like an FX lot size, not a crypto base quantity. "
+                "Update the strategy trade_size (e.g. 0.01 for BTC-USDT) then start again."
+            ),
+        )
+    return qty
 
 
 def _db_row_to_strategy(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -216,6 +273,7 @@ async def list_strategies():
             live_status = _live_runner().get_status(strategy["id"])
         except Exception:
             live_status = None
+        cfg_dict = cfg if isinstance(cfg, dict) else {}
         result.append(
             {
                 "id": strategy["id"],
@@ -224,6 +282,8 @@ async def list_strategies():
                 "status": strategy["status"],
                 "description": strategy.get("description", ""),
                 "instrument": instrument,
+                "trade_size": cfg_dict.get("trade_size"),
+                "config": cfg_dict,
                 "live": live_status,
                 "performance": {
                     "total_pnl": total_pnl,
@@ -382,20 +442,8 @@ async def start_strategy(
                 except Exception:
                     config = {}
 
-        instrument = req.instrument
-        # Prefer explicit live instrument; map SIM FX defaults → BTC-USDT for OKX spot
-        cfg_inst = str(config.get("instrument_id") or "")
-        if instrument in ("BTC-USDT", "") and cfg_inst and ".SIM" not in cfg_inst and "/" not in cfg_inst:
-            instrument = cfg_inst.replace("_", "-")
-
-        qty = req.quantity
-        # If trade_size looks like a crypto size (<= 10), use it
-        try:
-            ts = float(config.get("trade_size") or 0)
-            if 0 < ts <= 10:
-                qty = ts
-        except (TypeError, ValueError):
-            pass
+        instrument = _resolve_live_instrument(config, req.instrument)
+        qty = _resolve_live_quantity(config, req.quantity)
 
         try:
             live_info = await _live_runner().start(

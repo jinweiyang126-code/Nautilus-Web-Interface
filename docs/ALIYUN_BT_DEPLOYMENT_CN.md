@@ -289,11 +289,11 @@ docker compose ps
 1. 登录 OKX → **交易 → 模拟交易** → 个人中心 → **模拟盘 API**，创建 Demo API Key（记录 Key / Secret / Passphrase）
 2. 网站 Adapters → **OKX** → ⚙ → 填入三项凭证，勾选 **OKX Demo Trading (paper)**（默认勾选）→ Connect & Save
 3. 连接成功后可在订单/持仓相关页面走 Demo 现货；请求会带 `x-simulated-trading: 1`，**不会动真实资金**
-4. **策略自动交易**：Strategies → 创建 SMA / RSI / MACD → **Start OKX Demo**  
-   - 后端轮询 OKX 公共 K 线（默认 `BTC-USDT` / `1m`）  
-   - 按策略信号在 Demo 下市价单（现货仅 long/flat，卖出用于平多）  
-   - 卡片上会显示 position / last signal；订单出现在 Orders 页  
-   - 需先完成步骤 2，否则 Start 会提示未连接 OKX
+4. **策略自动交易**：Strategies → 创建策略时填写 **Instrument**（如 `BTC-USDT`）和 **Trade size**（如 `0.01`）→ **Start OKX Demo**  
+   - 下单标的与数量都来自该策略配置（`instrument_id` / `trade_size`），不是固定默认值  
+   - 后端轮询 OKX 公共 K 线（策略标的 / `1m`），按策略信号在 Demo 下市价单（现货 long/flat）  
+   - 卡片显示 position / last signal；订单出现在 Orders 页  
+   - 需先完成步骤 2；若 `trade_size` 仍是回测用的 `100000` 等 FX 手数，Start 会拒绝并提示改成币本位数量
 5. 服务器更新代码后需重建：
 
 ```bash
@@ -302,7 +302,7 @@ git pull origin main
 docker compose up -d --build
 ```
 
-注意：Demo Key 与实盘 Key 不互通；若报 `50101` 多为环境/Header 与 Key 类型不匹配。默认下单量 `0.001 BTC`，请确保 Demo 账户有足够 USDT。
+注意：Demo Key 与实盘 Key 不互通；若报 `50101` 多为环境/Header 与 Key 类型不匹配。请确保 Demo 账户有足够 USDT 覆盖策略 `trade_size`。
 
 ---
 

@@ -20,7 +20,9 @@ interface Strategy {
   type: string;
   status: string;
   description: string;
-  config: Record<string, any>;
+  instrument?: string;
+  trade_size?: string | number;
+  config?: Record<string, any>;
   live?: LiveStatus | null;
   performance: {
     total_pnl: number;
@@ -65,6 +67,8 @@ export default function StrategiesPage() {
     name: '',
     type: 'sma_crossover',
     description: '',
+    instrument_id: 'BTC-USDT',
+    trade_size: '0.01',
     config: {} as Record<string, unknown>,
   });
 
@@ -119,12 +123,33 @@ export default function StrategiesPage() {
       ...prev,
       type: typeId,
       description: prev.description || meta?.description || '',
-      config: meta?.default_config ? { ...meta.default_config } : prev.config,
+      // Keep user instrument / trade_size; only merge indicator defaults
+      config: meta?.default_config
+        ? {
+            ...meta.default_config,
+            instrument_id: prev.instrument_id,
+            trade_size: prev.trade_size,
+          }
+        : prev.config,
     }));
   };
 
   const handleAddStrategy = async () => {
     setModalError(null);
+    const size = String(newStrategy.trade_size || '').trim();
+    const inst = String(newStrategy.instrument_id || '').trim();
+    if (!inst) {
+      setModalError('Instrument is required (e.g. BTC-USDT)');
+      return;
+    }
+    if (!size || Number(size) <= 0) {
+      setModalError('Trade size must be > 0 (base coin amount from this strategy)');
+      return;
+    }
+    if (Number(size) > 100) {
+      setModalError('Trade size looks like an FX lot. For OKX Demo use base size e.g. 0.01 BTC');
+      return;
+    }
     try {
       const meta = strategyTypes.find(t => t.id === newStrategy.type);
       const defaults = meta?.default_config || {};
@@ -134,12 +159,17 @@ export default function StrategiesPage() {
         description: newStrategy.description || meta?.description || '',
         ...defaults,
         ...newStrategy.config,
+        // Strategy owns live sizing / symbol
+        instrument_id: inst,
+        trade_size: size,
       });
       setShowAddModal(false);
       setNewStrategy({
         name: '',
         type: strategyTypes[0]?.id || 'sma_crossover',
         description: '',
+        instrument_id: 'BTC-USDT',
+        trade_size: '0.01',
         config: {},
       });
       fetchStrategies();
@@ -151,12 +181,10 @@ export default function StrategiesPage() {
   const handleStartStrategy = async (strategyId: string) => {
     setFetchError(null);
     try {
-      // Start OKX Demo paper auto-trading (bars → signals → market orders)
+      // Size + instrument come from strategy config on the server
       await api.post(`/api/strategies/${strategyId}/start`, {
         live: true,
         exchange: 'okx',
-        instrument: 'BTC-USDT',
-        quantity: 0.001,
         bar: '1m',
         interval_sec: 60,
       });
@@ -257,6 +285,11 @@ export default function StrategiesPage() {
                 </div>
 
                 <p className="text-gray-600 text-sm mb-4">{strategy.description || 'No description'}</p>
+                <p className="text-xs text-gray-500 mb-4">
+                  {strategy.instrument || strategy.config?.instrument_id || '—'}
+                  {' · '}
+                  size {strategy.trade_size ?? strategy.config?.trade_size ?? '—'}
+                </p>
 
                 {/* Performance Metrics */}
                 <div className="bg-gray-50 rounded-lg p-4 mb-4">
@@ -282,8 +315,8 @@ export default function StrategiesPage() {
                   <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
                     <div className="font-semibold">OKX Demo live</div>
                     <div>
-                      {strategy.live.instrument || 'BTC-USDT'} · {strategy.live.bar || '1m'} · qty{' '}
-                      {strategy.live.quantity ?? 0.001}
+                      {strategy.live.instrument || strategy.instrument || '—'} · {strategy.live.bar || '1m'} · qty{' '}
+                      {strategy.live.quantity ?? strategy.trade_size ?? '—'}
                     </div>
                     <div>
                       position: {strategy.live.position || 'flat'} · signal:{' '}
@@ -363,6 +396,32 @@ export default function StrategiesPage() {
                 </div>
 
                 <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Instrument</label>
+                  <input
+                    type="text"
+                    value={newStrategy.instrument_id}
+                    onChange={(e) => setNewStrategy({ ...newStrategy, instrument_id: e.target.value })}
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    placeholder="BTC-USDT"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">OKX Demo symbol this strategy will trade</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Trade size</label>
+                  <input
+                    type="text"
+                    value={newStrategy.trade_size}
+                    onChange={(e) => setNewStrategy({ ...newStrategy, trade_size: e.target.value })}
+                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    placeholder="0.01"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    Base coin amount per signal (e.g. 0.01 BTC). Start uses this — not a fixed default.
+                  </p>
+                </div>
+
+                <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Description</label>
                   <textarea
                     value={newStrategy.description}
@@ -389,7 +448,7 @@ export default function StrategiesPage() {
                 <button
                   onClick={handleAddStrategy}
                   className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
-                  disabled={!newStrategy.name}
+                  disabled={!newStrategy.name || !newStrategy.instrument_id || !newStrategy.trade_size}
                 >
                   Add Strategy
                 </button>

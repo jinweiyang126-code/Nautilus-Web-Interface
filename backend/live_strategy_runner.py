@@ -78,14 +78,20 @@ class LiveStrategyRunner:
         strategy_type: str,
         config: Dict[str, Any],
         exchange: str = "okx",
-        instrument: str = "BTC-USDT",
-        quantity: float = 0.001,
+        instrument: str,
+        quantity: float,
         bar: str = "1m",
         interval_sec: int = 60,
     ) -> Dict[str, Any]:
         async with self._lock:
             if strategy_id in self._tasks and not self._tasks[strategy_id].done():
                 return {"success": True, "message": "already running", "status": self.get_status(strategy_id)}
+
+            if not instrument or not str(instrument).strip():
+                raise RuntimeError("Live instrument is required (from strategy config).")
+            qty = float(quantity)
+            if qty <= 0:
+                raise RuntimeError("Live quantity must be > 0 (from strategy trade_size).")
 
             venue_id = "okx" if str(exchange).lower() in ("okx", "okx_demo") else str(exchange).lower()
             if not self._live_manager.is_connected(venue_id):
@@ -99,8 +105,8 @@ class LiveStrategyRunner:
             state = LiveRunState(
                 strategy_id=strategy_id,
                 exchange=venue_id,
-                instrument=instrument,
-                quantity=float(quantity),
+                instrument=str(instrument).strip(),
+                quantity=qty,
                 bar=bar,
                 interval_sec=max(15, int(interval_sec)),
                 strategy_type=strategy_type,
