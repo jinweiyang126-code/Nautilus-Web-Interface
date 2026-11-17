@@ -43,6 +43,32 @@ async def list_orders():
             row["timestamp"] = datetime.now(timezone.utc).isoformat()
             all_orders.append(row)
 
+    # Refresh PENDING live orders from OKX so market fills show as FILLED
+    if not live_manager.is_connected():
+        await live_manager.ensure_connected_from_db()
+    if live_manager.is_connected("okx"):
+        for row in await database.list_orders():
+            if row.get("status") != "PENDING":
+                continue
+            venue_id = (row.get("exchange_order_id") or "").strip()
+            if not venue_id:
+                continue
+            try:
+                mapped = await live_manager.refresh_okx_order(
+                    instrument=row.get("instrument") or "BTC-USDT",
+                    exchange_order_id=venue_id,
+                )
+                if not mapped:
+                    continue
+                await database.update_order_fill(
+                    row["id"],
+                    status=mapped["status"],
+                    filled_qty=mapped["filled_qty"],
+                    price=mapped["price"],
+                )
+            except Exception:
+                continue
+
     db_orders = await database.list_orders()
     all_orders.extend(db_orders)
     return {"orders": all_orders, "count": len(all_orders)}
@@ -83,6 +109,9 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
 
     # 4. Live routing when adapter is connected
     exchange_order_id = None
+    local_status = "PENDING"
+    filled_qty = 0.0
+    persist_price = req.price
     if live_manager.is_connected():
         try:
             exchange_result = await live_manager.submit_order(order_dict)
@@ -97,6 +126,16 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
                     exchange_result.get("exchange_order_id")
                     or exchange_result.get("order_id")
                 )
+                status_raw = str(exchange_result.get("status") or "PENDING").upper()
+                if status_raw in ("FILLED", "CANCELLED", "PENDING"):
+                    local_status = status_raw
+                filled_qty = float(exchange_result.get("filled_qty") or 0)
+                if exchange_result.get("price") is not None:
+                    persist_price = float(exchange_result["price"])
+                # Market default: if OKX accepted but state unknown, treat as filled
+                if req.type == "MARKET" and local_status == "PENDING" and exchange_order_id:
+                    local_status = "FILLED"
+                    filled_qty = float(req.quantity)
         except HTTPException:
             raise
         except RuntimeError as exc:
@@ -104,15 +143,17 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Exchange error: {str(exc)}")
 
-    # 5. Persist order (include venue order id for later cancel)
+    # 5. Persist order (include venue order id + fill status)
     order = await database.create_order(
         instrument=req.instrument,
         side=req.side,
         order_type=req.type,
         quantity=req.quantity,
-        price=req.price,
+        price=persist_price,
         exchange_order_id=exchange_order_id,
         order_id=local_id,
+        status=local_status,
+        filled_qty=filled_qty,
     )
     await database.log_action(
         action="order_created",

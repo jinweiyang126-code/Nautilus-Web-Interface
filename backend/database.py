@@ -240,6 +240,8 @@ async def create_order(
     price: Optional[float] = None,
     exchange_order_id: Optional[str] = None,
     order_id: Optional[str] = None,
+    status: str = "PENDING",
+    filled_qty: float = 0.0,
 ) -> Dict[str, Any]:
     order = {
         "id": order_id or f"ORD-{uuid.uuid4().hex[:8].upper()}",
@@ -248,8 +250,8 @@ async def create_order(
         "type": order_type,
         "quantity": quantity,
         "price": price,
-        "status": "PENDING",
-        "filled_qty": 0.0,
+        "status": status,
+        "filled_qty": filled_qty,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "exchange_order_id": exchange_order_id,
     }
@@ -273,6 +275,31 @@ async def get_order(order_id: str) -> Optional[Dict[str, Any]]:
         async with db.execute("SELECT * FROM orders WHERE id=?", (order_id,)) as cur:
             row = await cur.fetchone()
     return dict(row) if row else None
+
+
+async def update_order_fill(
+    order_id: str,
+    *,
+    status: str,
+    filled_qty: Optional[float] = None,
+    price: Optional[float] = None,
+) -> bool:
+    fields = ["status=?"]
+    values: List[Any] = [status]
+    if filled_qty is not None:
+        fields.append("filled_qty=?")
+        values.append(filled_qty)
+    if price is not None:
+        fields.append("price=?")
+        values.append(price)
+    values.append(order_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            f"UPDATE orders SET {', '.join(fields)} WHERE id=?",
+            values,
+        )
+        await db.commit()
+        return cur.rowcount > 0
 
 
 async def cancel_order(order_id: str) -> bool:

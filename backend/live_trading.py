@@ -528,17 +528,44 @@ class LiveTradingManager:
             cl_ord_id=cl_ord_id,
         )
         order_id = str(result.get("ordId") or "")
+        local_status = "FILLED" if order_type == "market" else "PENDING"
+        filled_qty = float(order.get("quantity") or 0) if order_type == "market" else 0.0
+        avg_price = None
+        # Confirm fill state from OKX (market usually filled immediately)
+        if order_id:
+            try:
+                detail = await conn.okx_client.get_order(inst_id=inst_id, ord_id=order_id)
+                mapped = conn.okx_client.map_order_state(detail)
+                local_status = mapped["status"]
+                filled_qty = mapped["filled_qty"]
+                avg_price = mapped["price"]
+            except Exception as exc:
+                logger.warning("OKX get_order after place failed: %s", exc)
+
         return {
             "success": True,
             "order_id": order_id,
             "exchange_order_id": order_id,
             "client_order_id": str(result.get("clOrdId") or ""),
-            "status": "pending",
+            "status": local_status,
+            "filled_qty": filled_qty,
+            "price": avg_price,
             "exchange": "OKX",
             "demo": bool(conn.okx_demo),
             "sCode": result.get("sCode"),
             "sMsg": result.get("sMsg"),
         }
+
+    async def refresh_okx_order(
+        self, *, instrument: str, exchange_order_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch latest OKX order state for a known venue order id."""
+        conn = self._connections.get("okx")
+        if not conn or not conn.okx_client or conn.status not in ("connected", "connected_offline"):
+            return None
+        inst_id = self._to_okx_inst_id(instrument)
+        detail = await conn.okx_client.get_order(inst_id=inst_id, ord_id=exchange_order_id)
+        return conn.okx_client.map_order_state(detail)
 
     async def cancel_order(self, order_id: str, symbol: str = "BTCUSDT") -> Dict[str, Any]:
         """Cancel an order on the connected exchange via HTTP API."""

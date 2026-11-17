@@ -184,6 +184,39 @@ class OkxRestClient:
         payload = await self.request("GET", "/api/v5/account/balance", params=params)
         return list(payload.get("data") or [])
 
+    async def get_order(
+        self,
+        *,
+        inst_id: str,
+        ord_id: Optional[str] = None,
+        cl_ord_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, str] = {"instId": inst_id}
+        if ord_id:
+            params["ordId"] = str(ord_id)
+        if cl_ord_id:
+            params["clOrdId"] = str(cl_ord_id)
+        payload = await self.request("GET", "/api/v5/trade/order", params=params)
+        return (payload.get("data") or [{}])[0]
+
+    @staticmethod
+    def map_order_state(okx_order: Dict[str, Any]) -> Dict[str, Any]:
+        """Map OKX order payload → local status / filled_qty / avg price."""
+        state = str(okx_order.get("state") or "").lower()
+        filled = float(okx_order.get("accFillSz") or 0)
+        avg_px = okx_order.get("avgPx")
+        price = float(avg_px) if avg_px not in (None, "") else None
+        if state == "filled":
+            status = "FILLED"
+        elif state in ("canceled", "cancelled", "mmp_canceled"):
+            status = "CANCELLED"
+        elif state == "partially_filled":
+            status = "PENDING"
+        else:
+            # live / unknown
+            status = "PENDING"
+        return {"status": status, "filled_qty": filled, "price": price, "state": state}
+
     async def place_spot_order(
         self,
         *,
