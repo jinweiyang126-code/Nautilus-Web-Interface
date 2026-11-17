@@ -7,12 +7,13 @@ interface Position {
   instrument: string;
   side: 'LONG' | 'SHORT';
   quantity: number;
-  entry_price: number;
+  entry_price?: number | null;
   current_price?: number;
   pnl?: number;
   unrealized_pnl?: number;
   realized_pnl?: number;
-  timestamp: string;
+  timestamp?: string;
+  exchange?: string | null;
 }
 
 export default function PositionsPage() {
@@ -44,8 +45,8 @@ export default function PositionsPage() {
 
   const fetchPositions = async () => {
     try {
-      const data = await api.get<{ positions: Position[] }>('/api/positions');
-      const rows = data.positions || [];
+      const data = await api.get<{ positions?: Position[] } | Position[]>('/api/positions');
+      const rows = Array.isArray(data) ? data : (data.positions || []);
       setPositions(rows);
       const total = rows.reduce((sum: number, pos: Position) => sum + getPositionPnl(pos), 0);
       setTotalPnL(total);
@@ -95,14 +96,22 @@ export default function PositionsPage() {
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-4xl font-bold text-gray-900 mb-2">💼 Position Management</h1>
-            <p className="text-gray-600">Monitor your open positions and P&L</p>
+            <p className="text-gray-600">Monitor your open positions and P&L (synced from connected exchange)</p>
           </div>
-          <button
-            onClick={() => window.location.href = '/trader'}
-            className="px-6 py-3 bg-white border-2 border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-all font-semibold"
-          >
-            ← Back to Dashboard
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={() => void fetchPositions()}
+              className="px-6 py-3 bg-white border-2 border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-all font-semibold"
+            >
+              Refresh
+            </button>
+            <button
+              onClick={() => window.location.href = '/trader'}
+              className="px-6 py-3 bg-white border-2 border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-all font-semibold"
+            >
+              ← Back to Dashboard
+            </button>
+          </div>
         </div>
 
         {/* Summary Cards */}
@@ -154,6 +163,7 @@ export default function PositionsPage() {
                 <thead className="bg-gray-50 border-b-2 border-gray-200">
                   <tr>
                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Position ID</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Exchange</th>
                     <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Instrument</th>
                     <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Side</th>
                     <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Quantity</th>
@@ -167,6 +177,7 @@ export default function PositionsPage() {
                   {positions.map((position) => (
                     <tr key={position.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-4 text-sm font-mono text-gray-900">{position.id}</td>
+                      <td className="px-6 py-4 text-sm text-gray-700">{position.exchange || '—'}</td>
                       <td className="px-6 py-4 text-sm font-semibold text-gray-900">{position.instrument}</td>
                       <td className="px-6 py-4 text-center">
                         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getSideColor(position.side)}`}>
@@ -174,9 +185,11 @@ export default function PositionsPage() {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-sm text-right text-gray-900">{position.quantity}</td>
-                      <td className="px-6 py-4 text-sm text-right text-gray-900">${position.entry_price.toFixed(2)}</td>
                       <td className="px-6 py-4 text-sm text-right text-gray-900">
-                        {position.current_price != null ? `$${position.current_price.toFixed(2)}` : '-'}
+                        {position.entry_price != null ? `$${Number(position.entry_price).toFixed(2)}` : '—'}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-right text-gray-900">
+                        {position.current_price != null ? `$${Number(position.current_price).toFixed(2)}` : '—'}
                       </td>
                       <td className="px-6 py-4 text-sm text-right">
                         <span className={`font-bold ${getPnLColor(getPositionPnl(position))}`}>
@@ -184,12 +197,14 @@ export default function PositionsPage() {
                         </span>
                       </td>
                       <td className="px-6 py-4 text-center">
-                        <button
-                          onClick={() => handleClosePosition(position.id)}
-                          className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-all text-xs font-semibold"
-                        >
-                          Close
-                        </button>
+                        {position.instrument !== 'USDT' && (
+                          <button
+                            onClick={() => handleClosePosition(position.id)}
+                            className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 transition-all text-xs font-semibold"
+                          >
+                            Close
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}

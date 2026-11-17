@@ -724,11 +724,18 @@ class LiveTradingManager:
                 total = float(detail.get("eq") or 0)
                 if total <= 0:
                     continue
-                asset = str(detail.get("ccy") or "")
+                asset = str(detail.get("ccy") or "").upper()
+                if not asset:
+                    continue
+                # Spot balances: treat crypto holdings as LONG; keep USDT as cash row
+                instrument = "USDT" if asset == "USDT" else f"{asset}-USDT"
                 positions.append({
-                    "instrument": f"{asset}-USDT" if asset != "USDT" else "USDT",
+                    "id": f"POS-OKX-{asset}",
+                    "instrument": instrument,
                     "side": "LONG",
                     "quantity": total,
+                    "entry_price": None,
+                    "is_open": True,
                     "free": float(detail.get("availBal") or 0),
                     "locked": float(detail.get("frozenBal") or 0),
                     "source": "live",
