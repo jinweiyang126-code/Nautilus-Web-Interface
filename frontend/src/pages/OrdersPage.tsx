@@ -16,24 +16,37 @@ interface Order {
   exchange_order_id?: string | null;
 }
 
+interface Venue {
+  id: string;
+  name: string;
+  exchange: string;
+  status: string;
+  demo?: boolean;
+}
+
+const emptyOrderForm = {
+  exchange: '',
+  instrument: 'BTC-USDT',
+  side: 'BUY' as 'BUY' | 'SELL',
+  type: 'LIMIT' as 'MARKET' | 'LIMIT' | 'STOP',
+  quantity: 0.001,
+  price: 50000,
+};
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [venues, setVenues] = useState<Venue[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
-  const [newOrder, setNewOrder] = useState({
-    instrument: 'BTC-USDT',
-    side: 'BUY' as 'BUY' | 'SELL',
-    type: 'LIMIT' as 'MARKET' | 'LIMIT' | 'STOP',
-    quantity: 0.001,
-    price: 50000
-  });
+  const [newOrder, setNewOrder] = useState(emptyOrderForm);
   const { lastMessage } = useWebSocket();
   const prevMessageRef = useRef(lastMessage);
 
   useEffect(() => {
     fetchOrders();
+    fetchVenues();
   }, []);
 
   // Refresh on live_data WebSocket push instead of polling
@@ -45,6 +58,20 @@ export default function OrdersPage() {
       }
     }
   }, [lastMessage]);
+
+  const fetchVenues = async () => {
+    try {
+      const data = await api.get<{ venues: Venue[] }>('/api/orders/venues');
+      const list = data.venues || [];
+      setVenues(list);
+      setNewOrder(prev => ({
+        ...prev,
+        exchange: prev.exchange || list[0]?.id || '',
+      }));
+    } catch {
+      setVenues([]);
+    }
+  };
 
   const fetchOrders = async () => {
     try {
@@ -58,16 +85,30 @@ export default function OrdersPage() {
     }
   };
 
+  const openNewOrderModal = async () => {
+    setOrderError(null);
+    await fetchVenues();
+    setShowNewOrderModal(true);
+  };
+
   const handleCreateOrder = async () => {
+    if (!newOrder.exchange) {
+      setOrderError('Select an exchange (connect one in Adapters first)');
+      return;
+    }
     if (newOrder.quantity <= 0) {
       setOrderError('Quantity must be greater than 0');
       return;
     }
     setOrderError(null);
     try {
-      await api.post('/api/orders', newOrder);
+      await api.post('/api/orders', {
+        ...newOrder,
+        adapter_id: newOrder.exchange,
+        exchange: newOrder.exchange,
+      });
       setShowNewOrderModal(false);
-      setNewOrder({ instrument: 'BTC-USDT', side: 'BUY', type: 'LIMIT', quantity: 0.001, price: 50000 });
+      setNewOrder({ ...emptyOrderForm, exchange: venues[0]?.id || '' });
       fetchOrders();
     } catch (error) {
       setOrderError(error instanceof Error ? error.message : 'Failed to create order');
@@ -128,7 +169,7 @@ export default function OrdersPage() {
               ← Back to Dashboard
             </button>
             <button
-              onClick={() => setShowNewOrderModal(true)}
+              onClick={openNewOrderModal}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
             >
               + New Order
@@ -143,7 +184,7 @@ export default function OrdersPage() {
             <h3 className="text-2xl font-bold text-gray-900 mb-2">No Orders Yet</h3>
             <p className="text-gray-600 mb-6">Create your first order to start trading</p>
             <button
-              onClick={() => setShowNewOrderModal(true)}
+              onClick={openNewOrderModal}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
             >
               + New Order
@@ -232,6 +273,27 @@ export default function OrdersPage() {
               <h2 className="text-2xl font-bold text-gray-900 mb-6">Create New Order</h2>
               
               <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Exchange</label>
+                  {venues.length === 0 ? (
+                    <div className="w-full px-4 py-2 border-2 border-amber-200 bg-amber-50 rounded-lg text-sm text-amber-800">
+                      No exchange connected. Open Adapters and connect OKX / Binance / Bybit first.
+                    </div>
+                  ) : (
+                    <select
+                      value={newOrder.exchange}
+                      onChange={(e) => setNewOrder({ ...newOrder, exchange: e.target.value })}
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    >
+                      {venues.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name}{v.demo ? ' (Demo)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Instrument</label>
                   <input

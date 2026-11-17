@@ -21,6 +21,9 @@ class OrderCreateRequest(BaseModel):
     quantity: float = Field(..., gt=0)
     price: Optional[float] = Field(None, ge=0)
     leverage: float = Field(1.0, ge=1.0, le=1000.0)
+    # Target venue: okx / binance / bybit (or display name OKX / Binance / Bybit)
+    exchange: Optional[str] = Field(None, max_length=32)
+    adapter_id: Optional[str] = Field(None, max_length=32)
 
 
 def _local_order_id() -> str:
@@ -30,6 +33,14 @@ def _local_order_id() -> str:
 def _okx_cl_ord_id(local_id: str) -> str:
     # OKX clOrdId: 1-32 alphanumeric only (no hyphens)
     return "".join(ch for ch in local_id if ch.isalnum())[:32]
+
+
+@router.get("/orders/venues")
+async def list_order_venues():
+    """Connected exchanges that can receive new orders."""
+    await live_manager.ensure_connected_from_db()
+    venues = live_manager.list_connected_venues()
+    return {"venues": venues, "count": len(venues)}
 
 
 @router.get("/orders")
@@ -82,6 +93,9 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
     order_dict = req.model_dump()
     local_id = _local_order_id()
     order_dict["client_order_id"] = _okx_cl_ord_id(local_id)
+    # Prefer explicit adapter_id; exchange is the UI venue selector
+    if not order_dict.get("adapter_id") and order_dict.get("exchange"):
+        order_dict["adapter_id"] = order_dict["exchange"]
 
     # 1. Risk check — runs before anything else
     try:

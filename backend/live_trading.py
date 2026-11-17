@@ -357,17 +357,16 @@ class LiveTradingManager:
 
     async def ensure_connected_from_db(self) -> bool:
         """
-        If no in-memory adapter is active, try restoring from adapter_configs
-        rows marked connected (survives process restart when ENCRYPTION_KEY is set).
+        Restore all adapter_configs marked connected into memory
+        (survives process restart when ENCRYPTION_KEY is set).
         """
-        if self.is_connected():
-            return True
-
         import json
         import database
         from credential_utils import decrypt_credential
 
         for adapter_id in ("okx", "binance", "binance_futures", "bybit"):
+            if self.is_connected(adapter_id):
+                continue
             cfg = await database.get_adapter_config(adapter_id)
             if not cfg or cfg.get("status") != "connected":
                 continue
@@ -390,25 +389,88 @@ class LiveTradingManager:
                     await self.connect_binance(api_key, api_secret)
                 elif adapter_id == "bybit":
                     await self.connect_bybit(api_key, api_secret)
-                if self.is_connected():
-                    return True
             except Exception as exc:
                 logger.warning("Failed to restore %s from DB: %s", adapter_id, exc)
         return self.is_connected()
+
+    def list_connected_venues(self) -> List[Dict[str, Any]]:
+        """Return venues that can currently receive live orders."""
+        venues: List[Dict[str, Any]] = []
+        labels = {
+            "okx": "OKX",
+            "binance": "Binance",
+            "binance_futures": "Binance Futures",
+            "bybit": "Bybit",
+        }
+        for adapter_id, conn in self._connections.items():
+            if conn.status not in ("connected", "connected_offline"):
+                continue
+            ready = False
+            if adapter_id in ("binance", "binance_futures") and conn.binance_spot_api:
+                ready = True
+            elif adapter_id == "bybit" and conn.bybit_account_api:
+                ready = True
+            elif adapter_id == "okx" and conn.okx_client:
+                ready = True
+            if not ready:
+                continue
+            venues.append(
+                {
+                    "id": adapter_id,
+                    "name": labels.get(adapter_id, adapter_id.upper()),
+                    "exchange": labels.get(adapter_id, adapter_id.upper()).split()[0].upper()
+                    if adapter_id != "binance_futures"
+                    else "BINANCE",
+                    "status": conn.status,
+                    "demo": bool(getattr(conn, "okx_demo", False)) if adapter_id == "okx" else False,
+                }
+            )
+        return venues
+
+    @staticmethod
+    def _normalize_venue_key(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        key = value.strip().lower().replace(" ", "_")
+        aliases = {
+            "okx": "okx",
+            "binance": "binance",
+            "binance_futures": "binance_futures",
+            "binance-futures": "binance_futures",
+            "bybit": "bybit",
+        }
+        return aliases.get(key)
 
     # ── Order management (via Nautilus adapter HTTP APIs) ─────────────────────
 
     async def submit_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Submit an order via the connected exchange's HTTP API.
-        Routes to Binance, Bybit, or OKX based on active connection.
+        Submit an order via a connected exchange HTTP API.
+        Prefer order['exchange'] / order['adapter_id'] when provided.
         """
         if not self.is_connected():
             raise RuntimeError("No adapter connected. Connect an exchange adapter first.")
 
-        for adapter_id, conn in self._connections.items():
-            if conn.status not in ("connected", "connected_offline"):
-                continue
+        preferred = self._normalize_venue_key(
+            order.get("adapter_id") or order.get("exchange")
+        )
+        candidates = []
+        if preferred:
+            conn = self._connections.get(preferred)
+            if not conn or conn.status not in ("connected", "connected_offline"):
+                raise RuntimeError(
+                    f"Exchange '{preferred}' is not connected. "
+                    "Connect it in Adapters first, or pick another venue."
+                )
+            candidates = [(preferred, conn)]
+        else:
+            candidates = [
+                (aid, c)
+                for aid, c in self._connections.items()
+                if c.status in ("connected", "connected_offline")
+            ]
+
+        for adapter_id, conn in candidates:
             try:
                 if adapter_id in ("binance", "binance_futures") and conn.binance_spot_api:
                     return await self._submit_binance_order(conn, order)
