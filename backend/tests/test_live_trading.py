@@ -254,10 +254,10 @@ class TestPositionSync:
     def test_positions_have_source_field(self, client):
         """GET /api/positions must include 'source' field: 'live' or 'cached'."""
         r = client.get("/api/positions")
-        positions = r.json()
-        # Either empty or has source field
-        if positions:
-            assert "source" in positions[0], "Positions must have 'source' field"
+        body = r.json()
+        positions = body.get("positions", body if isinstance(body, list) else [])
+        # Top-level source, or per-row when non-empty
+        assert "source" in body or not positions or "source" in positions[0]
 
     def test_live_position_sync_endpoint(self, client):
         """POST /api/positions/sync must trigger a sync from exchange."""

@@ -598,10 +598,13 @@ def test_create_order_negative_quantity(client):
 # ── Positions ─────────────────────────────────────────────────────────────────
 
 def test_positions_list(client):
-    """GET /api/positions returns a list (may be empty)."""
+    """GET /api/positions returns {positions, count} (may be empty)."""
     r = client.get("/api/positions")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    body = r.json()
+    assert "positions" in body
+    assert isinstance(body["positions"], list)
+    assert body["count"] == len(body["positions"])
 
 
 def test_close_nonexistent_position(client):
