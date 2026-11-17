@@ -147,8 +147,8 @@ class LiveStrategyRunner:
         try:
             while True:
                 try:
-                    closes, bar_ts = await self._fetch_okx_closes(
-                        state.instrument, state.bar, limit=120
+                    closes, bar_ts = await self._fetch_closes(
+                        state.exchange, state.instrument, state.bar, limit=120
                     )
                     state.last_bar_ts = bar_ts
                     state.ticks += 1
@@ -219,6 +219,19 @@ class LiveStrategyRunner:
         except Exception as exc:
             logger.warning("Failed to persist live strategy order: %s", exc)
 
+    @classmethod
+    async def _fetch_closes(
+        cls, exchange: str, instrument: str, bar: str, limit: int = 100
+    ) -> tuple[List[float], Optional[str]]:
+        venue = (exchange or "okx").lower()
+        if venue in ("binance", "binance_futures"):
+            try:
+                return await cls._fetch_binance_closes(instrument, bar, limit=limit)
+            except Exception as exc:
+                logger.warning("Binance candles failed (%s); falling back to OKX public", exc)
+        # OKX / Bybit / unknown: use OKX public market data for signals
+        return await cls._fetch_okx_closes(instrument, bar, limit=limit)
+
     @staticmethod
     async def _fetch_okx_closes(
         instrument: str, bar: str, limit: int = 100
@@ -242,6 +255,38 @@ class LiveStrategyRunner:
         newest_ts = str(rows[-1][0]) if rows else None
         if len(closes) < 5:
             raise RuntimeError("Not enough candle data yet")
+        return closes, newest_ts
+
+    @staticmethod
+    async def _fetch_binance_closes(
+        instrument: str, bar: str, limit: int = 100
+    ) -> tuple[List[float], Optional[str]]:
+        """Binance public klines → oldest→newest closes."""
+        symbol = instrument.replace("/", "").replace("-", "").upper().split(".")[0]
+        interval_map = {
+            "1m": "1m",
+            "3m": "3m",
+            "5m": "5m",
+            "15m": "15m",
+            "1H": "1h",
+            "1h": "1h",
+            "4H": "4h",
+            "1D": "1d",
+        }
+        interval = interval_map.get(bar, "1m")
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        url = "https://api.binance.com/api/v3/klines"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            rows = resp.json()
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError("Binance returned no klines")
+        # Binance: [open_time, open, high, low, close, ...] oldest first
+        closes = [float(r[4]) for r in rows if len(r) > 4]
+        newest_ts = str(rows[-1][0]) if rows else None
+        if len(closes) < 5:
+            raise RuntimeError("Not enough Binance candle data yet")
         return closes, newest_ts
 
     @staticmethod

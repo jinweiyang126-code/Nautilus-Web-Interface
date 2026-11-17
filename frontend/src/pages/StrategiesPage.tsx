@@ -14,6 +14,14 @@ interface LiveStatus {
   ticks?: number;
 }
 
+interface Venue {
+  id: string;
+  name: string;
+  exchange: string;
+  status: string;
+  demo?: boolean;
+}
+
 interface Strategy {
   id: string;
   name: string;
@@ -22,6 +30,7 @@ interface Strategy {
   description: string;
   instrument?: string;
   trade_size?: string | number;
+  live_exchange?: string;
   config?: Record<string, any>;
   live?: LiveStatus | null;
   performance: {
@@ -63,10 +72,12 @@ export default function StrategiesPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [venues, setVenues] = useState<Venue[]>([]);
   const [newStrategy, setNewStrategy] = useState({
     name: '',
     type: 'sma_crossover',
     description: '',
+    live_exchange: '',
     instrument_id: 'BTC-USDT',
     trade_size: '0.01',
     config: {} as Record<string, unknown>,
@@ -75,7 +86,22 @@ export default function StrategiesPage() {
   useEffect(() => {
     fetchStrategies();
     fetchStrategyTypes();
+    fetchVenues();
   }, []);
+
+  const fetchVenues = async () => {
+    try {
+      const data = await api.get<{ venues: Venue[] }>('/api/orders/venues');
+      const list = data.venues || [];
+      setVenues(list);
+      setNewStrategy(prev => ({
+        ...prev,
+        live_exchange: prev.live_exchange || list[0]?.id || '',
+      }));
+    } catch {
+      setVenues([]);
+    }
+  };
 
   // Poll while any strategy is live-running so signal/position stay fresh
   useEffect(() => {
@@ -134,10 +160,21 @@ export default function StrategiesPage() {
     }));
   };
 
+  const openAddModal = async () => {
+    setModalError(null);
+    await fetchVenues();
+    setShowAddModal(true);
+  };
+
   const handleAddStrategy = async () => {
     setModalError(null);
     const size = String(newStrategy.trade_size || '').trim();
     const inst = String(newStrategy.instrument_id || '').trim();
+    const exchange = String(newStrategy.live_exchange || '').trim();
+    if (!exchange) {
+      setModalError('Select an exchange (connect one in Adapters first)');
+      return;
+    }
     if (!inst) {
       setModalError('Instrument is required (e.g. BTC-USDT)');
       return;
@@ -147,7 +184,7 @@ export default function StrategiesPage() {
       return;
     }
     if (Number(size) > 100) {
-      setModalError('Trade size looks like an FX lot. For OKX Demo use base size e.g. 0.01 BTC');
+      setModalError('Trade size looks like an FX lot. For live crypto use base size e.g. 0.01 BTC');
       return;
     }
     try {
@@ -159,7 +196,7 @@ export default function StrategiesPage() {
         description: newStrategy.description || meta?.description || '',
         ...defaults,
         ...newStrategy.config,
-        // Strategy owns live sizing / symbol
+        live_exchange: exchange,
         instrument_id: inst,
         trade_size: size,
       });
@@ -168,6 +205,7 @@ export default function StrategiesPage() {
         name: '',
         type: strategyTypes[0]?.id || 'sma_crossover',
         description: '',
+        live_exchange: venues[0]?.id || '',
         instrument_id: 'BTC-USDT',
         trade_size: '0.01',
         config: {},
@@ -185,10 +223,17 @@ export default function StrategiesPage() {
     ).trim();
     const sizeRaw = strategy.trade_size ?? strategy.config?.trade_size;
     const sizeNum = sizeRaw != null && String(sizeRaw).trim() !== '' ? Number(sizeRaw) : NaN;
+    const exchange = String(
+      strategy.live_exchange || strategy.config?.live_exchange || strategy.config?.exchange || venues[0]?.id || '',
+    ).trim();
 
+    if (!exchange) {
+      setFetchError('没有可用交易所。请先在 Adapters 连接 OKX / Binance / Bybit。');
+      return;
+    }
     if (!instrument || instrument.includes('.SIM') || instrument.toUpperCase().startsWith('EUR/USD')) {
       setFetchError(
-        '这条是回测策略（如 EUR/USD.SIM），不能用于 OKX Demo。请新建策略，Instrument 填 BTC-USDT，Trade size 填 0.01 后再 Start。',
+        '这条是回测策略（如 EUR/USD.SIM），不能用于实盘/Demo。请新建策略，选交易所，Instrument 填 BTC-USDT，Trade size 填 0.01。',
       );
       return;
     }
@@ -202,7 +247,7 @@ export default function StrategiesPage() {
     try {
       await api.post(`/api/strategies/${strategy.id}/start`, {
         live: true,
-        exchange: 'okx',
+        exchange,
         instrument,
         quantity: sizeNum,
         bar: '1m',
@@ -254,7 +299,7 @@ export default function StrategiesPage() {
           <div>
             <h1 className="text-4xl font-bold text-gray-900 mb-2">📈 Strategy Management</h1>
             <p className="text-gray-600">
-              Start runs OKX Demo paper auto-trading (connect OKX Demo in Adapters first)
+              Create a strategy with exchange + instrument + size, then Start live paper trading
             </p>
           </div>
           <div className="flex gap-4">
@@ -265,7 +310,7 @@ export default function StrategiesPage() {
               ← Back to Dashboard
             </button>
             <button
-              onClick={() => setShowAddModal(true)}
+              onClick={openAddModal}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
             >
               + Add Strategy
@@ -280,7 +325,7 @@ export default function StrategiesPage() {
             <h3 className="text-2xl font-bold text-gray-900 mb-2">No Strategies Yet</h3>
             <p className="text-gray-600 mb-6">Add your first trading strategy to get started</p>
             <button
-              onClick={() => setShowAddModal(true)}
+              onClick={openAddModal}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
             >
               + Add Strategy
@@ -306,6 +351,8 @@ export default function StrategiesPage() {
 
                 <p className="text-gray-600 text-sm mb-4">{strategy.description || 'No description'}</p>
                 <p className="text-xs text-gray-500 mb-4">
+                  {(strategy.live_exchange || strategy.config?.live_exchange || '—').toString().toUpperCase()}
+                  {' · '}
                   {strategy.instrument || strategy.config?.instrument_id || '—'}
                   {' · '}
                   size {strategy.trade_size ?? strategy.config?.trade_size ?? '—'}
@@ -333,7 +380,9 @@ export default function StrategiesPage() {
 
                 {strategy.live?.running && (
                   <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
-                    <div className="font-semibold">OKX Demo live</div>
+                    <div className="font-semibold">
+                      {(strategy.live.exchange || strategy.live_exchange || 'live').toString().toUpperCase()} live
+                    </div>
                     <div>
                       {strategy.live.instrument || strategy.instrument || '—'} · {strategy.live.bar || '1m'} · qty{' '}
                       {strategy.live.quantity ?? strategy.trade_size ?? '—'}
@@ -355,7 +404,7 @@ export default function StrategiesPage() {
                       onClick={() => handleStartStrategy(strategy)}
                       className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-all font-semibold text-sm"
                     >
-                      ▶ Start OKX Demo
+                      ▶ Start Live
                     </button>
                   ) : (
                     <button
@@ -416,6 +465,28 @@ export default function StrategiesPage() {
                 </div>
 
                 <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Exchange</label>
+                  {venues.length === 0 ? (
+                    <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      No exchange connected. Open Adapters and connect OKX / Binance / Bybit first.
+                    </p>
+                  ) : (
+                    <select
+                      value={newStrategy.live_exchange}
+                      onChange={(e) => setNewStrategy({ ...newStrategy, live_exchange: e.target.value })}
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                    >
+                      {venues.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name || v.id}
+                          {v.demo ? ' (Demo)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Instrument</label>
                   <input
                     type="text"
@@ -424,7 +495,7 @@ export default function StrategiesPage() {
                     className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                     placeholder="BTC-USDT"
                   />
-                  <p className="mt-1 text-xs text-gray-500">OKX Demo symbol this strategy will trade</p>
+                  <p className="mt-1 text-xs text-gray-500">Symbol this strategy will trade on the selected exchange</p>
                 </div>
 
                 <div>
@@ -468,7 +539,12 @@ export default function StrategiesPage() {
                 <button
                   onClick={handleAddStrategy}
                   className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
-                  disabled={!newStrategy.name || !newStrategy.instrument_id || !newStrategy.trade_size}
+                  disabled={
+                    !newStrategy.name
+                    || !newStrategy.instrument_id
+                    || !newStrategy.trade_size
+                    || !newStrategy.live_exchange
+                  }
                 >
                   Add Strategy
                 </button>

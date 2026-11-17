@@ -93,7 +93,7 @@ class StrategyStartRequest(BaseModel):
     instrument_id / live_instrument). Request fields only override when set.
     """
     live: bool = False
-    exchange: str = "okx"
+    exchange: Optional[str] = None  # defaults to strategy live_exchange, else okx
     instrument: Optional[str] = None
     quantity: Optional[float] = Field(None, gt=0, le=1000)
     bar: str = "1m"
@@ -285,6 +285,7 @@ async def list_strategies():
                 "description": strategy.get("description", ""),
                 "instrument": instrument,
                 "trade_size": cfg_dict.get("trade_size"),
+                "live_exchange": cfg_dict.get("live_exchange") or cfg_dict.get("exchange"),
                 "config": cfg_dict,
                 "live": live_status,
                 "performance": {
@@ -346,6 +347,10 @@ async def create_strategy(body: Dict[str, Any] = Body(...), _user: dict = Depend
 
     # Build config from request body, falling back to defaults for missing/null values
     config = {k: (body.get(k) if body.get(k) is not None else defaults[k]) for k in defaults}
+    # Live trading venue (Orders-style selector); not part of backtest defaults
+    live_exchange = body.get("live_exchange") or body.get("exchange")
+    if live_exchange:
+        config["live_exchange"] = str(live_exchange).strip().lower()
 
     now = datetime.now(timezone.utc).isoformat()
     strategy_row = {
@@ -459,13 +464,19 @@ async def start_strategy(
 
         instrument = _resolve_live_instrument(config, req.instrument)
         qty = _resolve_live_quantity(config, req.quantity)
+        exchange = str(
+            req.exchange
+            or config.get("live_exchange")
+            or config.get("exchange")
+            or "okx"
+        ).strip().lower()
 
         try:
             live_info = await _live_runner().start(
                 strategy_id=strategy_id,
                 strategy_type=strategy_type,
                 config=config,
-                exchange=req.exchange,
+                exchange=exchange,
                 instrument=instrument,
                 quantity=qty,
                 bar=req.bar,
