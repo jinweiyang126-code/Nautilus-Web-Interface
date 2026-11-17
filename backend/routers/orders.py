@@ -152,8 +152,20 @@ async def cancel_order(order_id: str, _user: dict = Depends(get_current_user)):
                 if isinstance(result, dict) and result.get("success") is False:
                     err_text = str(result.get("error") or result)
                 scode = str((result or {}).get("sCode") or "0")
-                # 51400: already filled / canceled / does not exist → treat as done
-                already_gone = "51400" in err_text or scode == "51400"
+                # 51400 only means "already gone" when we had a real venue ordId.
+                # Old local-only IDs often 51400 while the App order is still live.
+                already_gone = bool(venue_id) and (
+                    "51400" in err_text or scode == "51400"
+                )
+                if ("51400" in err_text or scode == "51400") and not venue_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Cannot cancel this order on OKX from the website: "
+                            "it was placed before venue order IDs were stored. "
+                            "Tap 撤单 in the OKX App, then ignore/cancel locally."
+                        ),
+                    )
                 if err_text and not already_gone:
                     raise HTTPException(
                         status_code=502,
@@ -168,8 +180,18 @@ async def cancel_order(order_id: str, _user: dict = Depends(get_current_user)):
                 raise
             except Exception as exc:
                 err = str(exc)
-                # Idempotent: OKX says order is already gone
-                if "51400" not in err:
+                if "51400" in err and venue_id:
+                    pass  # venue says already gone → continue to local cancel
+                elif "51400" in err and not venue_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Cannot cancel this order on OKX from the website: "
+                            "it was placed before venue order IDs were stored. "
+                            "Tap 撤单 in the OKX App, then ignore/cancel locally."
+                        ),
+                    ) from exc
+                else:
                     raise HTTPException(
                         status_code=502,
                         detail=(
