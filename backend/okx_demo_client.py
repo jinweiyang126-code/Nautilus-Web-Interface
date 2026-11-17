@@ -195,13 +195,19 @@ class OkxRestClient:
         cl_ord_id: Optional[str] = None,
         td_mode: str = "cash",
     ) -> Dict[str, Any]:
+        ord_type_l = ord_type.lower()
+        side_l = side.lower()
         body: Dict[str, Any] = {
             "instId": inst_id,
             "tdMode": td_mode,
-            "side": side.lower(),
-            "ordType": ord_type.lower(),
+            "side": side_l,
+            "ordType": ord_type_l,
             "sz": self.format_number(sz),
         }
+        # Spot market orders: OKX defaults buy sz to quote (USDT). Our UI quantity
+        # is always base (e.g. 0.001 BTC), so force base_ccy to avoid 51020 on tiny USDT.
+        if ord_type_l == "market":
+            body["tgtCcy"] = "base_ccy"
         if px is not None and str(px).strip() != "":
             body["px"] = self.format_number(px)
         if cl_ord_id:
