@@ -52,6 +52,8 @@ function Router() {
       <Route path="/admin/api-config" component={ApiConfigPage} />
       <Route path="/admin/db-management" component={DatabaseManagementPage} />
       <Route path="/admin/users" component={UsersPage} />
+      {/* Admin dashboard links to /admin/positions; same page as trader */}
+      <Route path="/admin/positions" component={PositionsPage} />
       <Route path="/trader" component={TraderDashboard} />
       <Route path="/trader/strategies" component={StrategiesPage} />
       <Route path="/trader/orders" component={OrdersPage} />
