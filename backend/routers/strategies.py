@@ -77,6 +77,8 @@ class StrategyCreateRequest(BaseModel):
     rsi_period: int = Field(14, ge=2, le=200)
     oversold_level: float = Field(30.0, ge=1, le=49)
     overbought_level: float = Field(70.0, ge=51, le=99)
+    # MACD params
+    signal_period: int = Field(9, ge=1, le=200)
     trade_size: str = "100000"
 
 
@@ -123,6 +125,8 @@ async def load_strategies_from_db() -> None:
                     "rsi_period": cfg.get("rsi_period", 14),
                     "oversold_level": cfg.get("oversold_level", 30.0),
                     "overbought_level": cfg.get("overbought_level", 70.0),
+                    # MACD params
+                    "signal_period": cfg.get("signal_period", 9),
                 })
                 # Restore the persisted status after create (create sets to 'created')
                 if sid in _nautilus().strategies:

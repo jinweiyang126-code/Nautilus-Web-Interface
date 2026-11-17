@@ -15,8 +15,34 @@ interface Strategy {
   };
 }
 
+interface StrategyTypeOption {
+  id: string;
+  label: string;
+  description: string;
+  default_config?: Record<string, unknown>;
+}
+
+const FALLBACK_STRATEGY_TYPES: StrategyTypeOption[] = [
+  {
+    id: 'sma_crossover',
+    label: 'SMA Crossover',
+    description: 'Buy when fast SMA crosses above slow SMA, sell on cross-down.',
+  },
+  {
+    id: 'rsi',
+    label: 'RSI Mean-Reversion',
+    description: 'Enter long on RSI oversold cross-up, short on overbought cross-down.',
+  },
+  {
+    id: 'macd',
+    label: 'MACD Crossover',
+    description: 'Buy when MACD line crosses above signal line, sell on cross-down.',
+  },
+];
+
 export default function StrategiesPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [strategyTypes, setStrategyTypes] = useState<StrategyTypeOption[]>(FALLBACK_STRATEGY_TYPES);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
@@ -25,12 +51,31 @@ export default function StrategiesPage() {
     name: '',
     type: 'sma_crossover',
     description: '',
-    config: {}
+    config: {} as Record<string, unknown>,
   });
 
   useEffect(() => {
     fetchStrategies();
+    fetchStrategyTypes();
   }, []);
+
+  const fetchStrategyTypes = async () => {
+    try {
+      const data = await api.get<{ types?: StrategyTypeOption[]; strategy_types?: StrategyTypeOption[] }>(
+        '/api/strategy-types',
+      );
+      const list = data.types || data.strategy_types || [];
+      if (list.length > 0) {
+        setStrategyTypes(list);
+        setNewStrategy(prev => ({
+          ...prev,
+          type: list.some(t => t.id === prev.type) ? prev.type : list[0].id,
+        }));
+      }
+    } catch {
+      // Keep fallback types (includes MACD)
+    }
+  };
 
   const fetchStrategies = async () => {
     try {
@@ -44,12 +89,35 @@ export default function StrategiesPage() {
     }
   };
 
+  const handleTypeChange = (typeId: string) => {
+    const meta = strategyTypes.find(t => t.id === typeId);
+    setNewStrategy(prev => ({
+      ...prev,
+      type: typeId,
+      description: prev.description || meta?.description || '',
+      config: meta?.default_config ? { ...meta.default_config } : prev.config,
+    }));
+  };
+
   const handleAddStrategy = async () => {
     setModalError(null);
     try {
-      await api.post('/api/strategies', newStrategy);
+      const meta = strategyTypes.find(t => t.id === newStrategy.type);
+      const defaults = meta?.default_config || {};
+      await api.post('/api/strategies', {
+        name: newStrategy.name,
+        type: newStrategy.type,
+        description: newStrategy.description || meta?.description || '',
+        ...defaults,
+        ...newStrategy.config,
+      });
       setShowAddModal(false);
-      setNewStrategy({ name: '', type: 'sma_crossover', description: '', config: {} });
+      setNewStrategy({
+        name: '',
+        type: strategyTypes[0]?.id || 'sma_crossover',
+        description: '',
+        config: {},
+      });
       fetchStrategies();
     } catch (error) {
       setModalError(error instanceof Error ? error.message : 'Failed to add strategy');
@@ -226,12 +294,20 @@ export default function StrategiesPage() {
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Strategy Type</label>
                   <select
                     value={newStrategy.type}
-                    onChange={(e) => setNewStrategy({ ...newStrategy, type: e.target.value })}
+                    onChange={(e) => handleTypeChange(e.target.value)}
                     className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                   >
-                    <option value="sma_crossover">SMA Crossover</option>
-                    <option value="rsi">RSI</option>
+                    {strategyTypes.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.label || t.id}
+                      </option>
+                    ))}
                   </select>
+                  {strategyTypes.find(t => t.id === newStrategy.type)?.description && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      {strategyTypes.find(t => t.id === newStrategy.type)?.description}
+                    </p>
+                  )}
                 </div>
 
                 <div>
