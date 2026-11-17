@@ -115,8 +115,10 @@ def _resolve_live_instrument(config: Dict[str, Any], override: Optional[str] = N
     raise HTTPException(
         status_code=400,
         detail=(
-            "Strategy has no live instrument. Set instrument_id (e.g. BTC-USDT) "
-            "or live_instrument on the strategy before starting OKX Demo trading."
+            "This strategy has no OKX-tradable instrument "
+            "(got a backtest symbol like EUR/USD.SIM, or instrument missing). "
+            "Create a new strategy with Instrument e.g. BTC-USDT and Trade size e.g. 0.01, "
+            "then Start that one — do not start old backtest-only strategies."
         ),
     )
 
@@ -420,27 +422,40 @@ async def start_strategy(
     live_info = None
     req = body or StrategyStartRequest()
     if req.live:
-        # Resolve strategy type + config from memory or DB
+        # Prefer DB config (authoritative); merge in-memory fields if present
         strategy_type = "sma_crossover"
         config: Dict[str, Any] = {}
+        db_rows = await database.list_strategies()
+        match = next((r for r in db_rows if r["id"] == strategy_id), None)
+        if match:
+            strategy_type = match.get("type") or strategy_type
+            try:
+                raw_cfg = match.get("config") or "{}"
+                config = json.loads(raw_cfg) if isinstance(raw_cfg, str) else dict(raw_cfg or {})
+            except Exception:
+                config = {}
         sys = _nautilus()
         if hasattr(sys, "strategies") and isinstance(sys.strategies, dict) and strategy_id in sys.strategies:
             row = sys.strategies[strategy_id]
             strategy_type = row.get("type") or strategy_type
             cfg = row.get("config") or {}
             if isinstance(cfg, dict):
-                config = cfg
+                # DB wins on conflicts only when memory has empty values
+                merged = dict(cfg)
+                merged.update({k: v for k, v in config.items() if v not in (None, "")})
+                # Prefer non-SIM instrument_id from either side
+                for key in ("instrument_id", "live_instrument", "trade_size"):
+                    mem_v = cfg.get(key) if isinstance(cfg, dict) else None
+                    db_v = config.get(key)
+                    if db_v not in (None, ""):
+                        merged[key] = db_v
+                    elif mem_v not in (None, ""):
+                        merged[key] = mem_v
+                config = merged
             elif hasattr(cfg, "__dict__"):
-                config = dict(cfg.__dict__)
-        else:
-            db_rows = await database.list_strategies()
-            match = next((r for r in db_rows if r["id"] == strategy_id), None)
-            if match:
-                strategy_type = match.get("type") or strategy_type
-                try:
-                    config = json.loads(match.get("config") or "{}")
-                except Exception:
-                    config = {}
+                for k, v in dict(cfg.__dict__).items():
+                    if k not in config or config.get(k) in (None, ""):
+                        config[k] = v
 
         instrument = _resolve_live_instrument(config, req.instrument)
         qty = _resolve_live_quantity(config, req.quantity)

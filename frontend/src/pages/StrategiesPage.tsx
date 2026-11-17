@@ -178,13 +178,33 @@ export default function StrategiesPage() {
     }
   };
 
-  const handleStartStrategy = async (strategyId: string) => {
+  const handleStartStrategy = async (strategy: Strategy) => {
     setFetchError(null);
+    const instrument = String(
+      strategy.instrument || strategy.config?.instrument_id || strategy.config?.live_instrument || '',
+    ).trim();
+    const sizeRaw = strategy.trade_size ?? strategy.config?.trade_size;
+    const sizeNum = sizeRaw != null && String(sizeRaw).trim() !== '' ? Number(sizeRaw) : NaN;
+
+    if (!instrument || instrument.includes('.SIM') || instrument.toUpperCase().startsWith('EUR/USD')) {
+      setFetchError(
+        '这条是回测策略（如 EUR/USD.SIM），不能用于 OKX Demo。请新建策略，Instrument 填 BTC-USDT，Trade size 填 0.01 后再 Start。',
+      );
+      return;
+    }
+    if (!Number.isFinite(sizeNum) || sizeNum <= 0 || sizeNum > 100) {
+      setFetchError(
+        '该策略缺少有效的 Trade size（卡片上 size 为 —）。请删除后重建，填写 Trade size（如 0.01）。',
+      );
+      return;
+    }
+
     try {
-      // Size + instrument come from strategy config on the server
-      await api.post(`/api/strategies/${strategyId}/start`, {
+      await api.post(`/api/strategies/${strategy.id}/start`, {
         live: true,
         exchange: 'okx',
+        instrument,
+        quantity: sizeNum,
         bar: '1m',
         interval_sec: 60,
       });
@@ -332,7 +352,7 @@ export default function StrategiesPage() {
                 <div className="flex gap-2">
                   {strategy.status === 'stopped' ? (
                     <button
-                      onClick={() => handleStartStrategy(strategy.id)}
+                      onClick={() => handleStartStrategy(strategy)}
                       className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-all font-semibold text-sm"
                     >
                       ▶ Start OKX Demo
