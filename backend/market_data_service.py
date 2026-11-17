@@ -103,6 +103,26 @@ def _cache_is_fresh(entry: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+def _complete_instruments(partial: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Always return one row per SYMBOLS entry, in SYMBOLS order.
+
+    Prefer live/partial rows, then per-symbol cache, then hard-coded fallback.
+    Prevents a partial Binance/cache failure from shrinking the instruments list
+    to a single symbol (e.g. only BTCUSDT).
+    """
+    by_sym = {item["symbol"]: item for item in partial if item.get("symbol")}
+    result: List[Dict[str, Any]] = []
+    for symbol in SYMBOLS:
+        if symbol in by_sym:
+            result.append(by_sym[symbol])
+        elif symbol in _symbol_cache and isinstance(_symbol_cache[symbol].get("data"), dict):
+            result.append(_symbol_cache[symbol]["data"])
+        else:
+            result.append(_fallback_for(symbol))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -113,12 +133,14 @@ async def get_instruments() -> List[Dict[str, Any]]:
 
     Hits Binance with a single batch request using the ``symbols`` parameter
     to keep weight usage low.  Results are cached for CACHE_TTL seconds.
+    On Binance failure (or partial payload), always returns the full SYMBOLS list.
     """
     global _instruments_cache
 
     async with _fetch_lock:
         if _cache_is_fresh(_instruments_cache):
-            return _instruments_cache["data"]  # type: ignore[index]
+            # Re-complete in case an older cached payload was truncated
+            return _complete_instruments(_instruments_cache["data"])  # type: ignore[index]
 
         try:
             import json as _json
@@ -129,34 +151,38 @@ async def get_instruments() -> List[Dict[str, Any]]:
                 )
                 resp.raise_for_status()
                 tickers = resp.json()
+                if not isinstance(tickers, list):
+                    tickers = [tickers] if isinstance(tickers, dict) else []
 
-            result = [_parse_ticker(t) for t in tickers if t.get("symbol") in SYMBOLS]
+            parsed = [_parse_ticker(t) for t in tickers if t.get("symbol") in SYMBOLS]
+            result = _complete_instruments(parsed)
 
-            # Preserve original symbol ordering
-            order = {s: i for i, s in enumerate(SYMBOLS)}
-            result.sort(key=lambda x: order.get(x["symbol"], 99))
-
-            # Update per-symbol cache as a side-effect
+            # Update per-symbol cache only for live-parsed rows
+            live_syms = {p["symbol"] for p in parsed}
             for item in result:
-                _symbol_cache[item["symbol"]] = {
-                    "data": item,
-                    "fetched_at": time.monotonic(),
-                }
+                if item["symbol"] in live_syms:
+                    _symbol_cache[item["symbol"]] = {
+                        "data": item,
+                        "fetched_at": time.monotonic(),
+                    }
 
             _instruments_cache = {"data": result, "fetched_at": time.monotonic()}
             return result
 
         except Exception:
-            # Binance unreachable — use cached values if available
+            # Binance unreachable — merge per-symbol cache + hard-coded defaults
+            # so the UI always shows the full instrument list.
             cached_items = [
                 _symbol_cache[s]["data"]
                 for s in SYMBOLS
-                if s in _symbol_cache
+                if s in _symbol_cache and isinstance(_symbol_cache[s].get("data"), dict)
             ]
-            if cached_items:
-                return cached_items
-            # Cold start with no network — serve fallback values
-            return [_fallback_for(s) for s in SYMBOLS]
+            # Prefer last full instruments cache rows when present
+            if _instruments_cache and isinstance(_instruments_cache.get("data"), list):
+                cached_items = list(_instruments_cache["data"]) + cached_items
+            result = _complete_instruments(cached_items)
+            _instruments_cache = {"data": result, "fetched_at": time.monotonic()}
+            return result
 
 
 async def get_symbol_data(symbol: str) -> Dict[str, Any]:
