@@ -6,7 +6,7 @@ Supports: sma_crossover, rsi, macd
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -240,6 +240,43 @@ async def nautilus_create_strategy(request: StrategyCreateRequest, _user: dict =
 
 # ── UI-facing endpoints ───────────────────────────────────────────────────────
 
+def _config_as_dict(cfg: Any) -> Dict[str, Any]:
+    """Normalize strategy config (plain dict or Nautilus StrategyConfig) to a dict."""
+    if isinstance(cfg, dict):
+        return dict(cfg)
+    if cfg is None:
+        return {}
+    out: Dict[str, Any] = {}
+    for key in (
+        "instrument_id",
+        "bar_type",
+        "fast_period",
+        "slow_period",
+        "rsi_period",
+        "oversold_level",
+        "overbought_level",
+        "signal_period",
+        "trade_size",
+        "live_exchange",
+        "live_instrument",
+        "exchange",
+    ):
+        if hasattr(cfg, key):
+            try:
+                out[key] = getattr(cfg, key)
+            except Exception:
+                pass
+    # Also pull from __dict__ / model_dump when available
+    if hasattr(cfg, "model_dump"):
+        try:
+            out.update({k: v for k, v in cfg.model_dump().items() if v is not None})
+        except Exception:
+            pass
+    elif hasattr(cfg, "__dict__"):
+        out.update({k: v for k, v in vars(cfg).items() if not k.startswith("_")})
+    return out
+
+
 @router.get("/strategies")
 async def list_strategies():
     # Check daily loss limit and auto-stop running strategies if exceeded
@@ -248,25 +285,62 @@ async def list_strategies():
         await risk_engine.check_daily_loss_auto_stop()
     except Exception:
         pass  # Never fail the list endpoint due to risk check errors
-    strategies = _nautilus().get_all_strategies()
+
+    # DB is source of truth (create always persists). Memory may miss rows when
+    # Nautilus engine registration fails for live crypto symbols.
+    db_rows = await database.list_strategies()
+    sys = _nautilus()
+    mem = sys.strategies if hasattr(sys, "strategies") and isinstance(sys.strategies, dict) else {}
+
+    strategies: List[Dict[str, Any]] = []
+    seen = set()
+    for row in db_rows:
+        s = _db_row_to_strategy(row)
+        sid = s["id"]
+        seen.add(sid)
+        if sid not in mem:
+            mem[sid] = dict(s)
+        else:
+            # Prefer live/runtime status from memory
+            s["status"] = mem[sid].get("status", s["status"])
+            # Merge config: DB dict wins for live fields; fill gaps from memory
+            mem_cfg = _config_as_dict(mem[sid].get("config"))
+            db_cfg = s.get("config") if isinstance(s.get("config"), dict) else {}
+            merged = dict(mem_cfg)
+            merged.update({k: v for k, v in db_cfg.items() if v not in (None, "")})
+            s["config"] = merged
+        strategies.append(s)
+    # Include any memory-only strategies (e.g. not yet flushed)
+    for sid, m in list(mem.items()):
+        if sid in seen:
+            continue
+        strategies.append(
+            {
+                "id": sid,
+                "name": m.get("name", sid),
+                "type": m.get("type", "sma_crossover"),
+                "status": m.get("status", "stopped"),
+                "description": m.get("description", ""),
+                "config": _config_as_dict(m.get("config")),
+            }
+        )
+
     result = []
+    db_orders = await database.list_orders()
+    filled_orders = [o for o in db_orders if o.get("status") == "filled"]
+    db_pnl = sum(float(o.get("pnl") or 0) for o in filled_orders)
+    db_trades = len(filled_orders)
+
     for strategy in strategies:
         br = _nautilus().get_backtest_results(strategy["id"])
-        cfg = strategy.get("config") or {}
-        if hasattr(cfg, "instrument_id"):
-            instrument = str(cfg.instrument_id)
-        elif isinstance(cfg, dict):
-            instrument = cfg.get("instrument_id", "EUR/USD.SIM")
-        else:
-            instrument = "EUR/USD.SIM"
-        # Merge backtest results with live DB orders for up-to-date performance
-        db_orders = await database.list_orders()
-        filled_orders = [o for o in db_orders if o.get("status") == "filled"]
-        db_pnl = sum(float(o.get("pnl") or 0) for o in filled_orders)
-        db_trades = len(filled_orders)
+        cfg_dict = _config_as_dict(strategy.get("config"))
+        instrument = str(
+            cfg_dict.get("instrument_id")
+            or cfg_dict.get("live_instrument")
+            or "EUR/USD.SIM"
+        )
         total_pnl = br.get("total_pnl", 0.0) if br else 0.0
         total_trades = br.get("total_trades", 0) if br else 0
-        # Use DB values if greater (live orders supplement backtest)
         if db_pnl != 0.0 or db_trades > 0:
             total_pnl = db_pnl
             total_trades = db_trades
@@ -275,7 +349,6 @@ async def list_strategies():
             live_status = _live_runner().get_status(strategy["id"])
         except Exception:
             live_status = None
-        cfg_dict = cfg if isinstance(cfg, dict) else {}
         result.append(
             {
                 "id": strategy["id"],
@@ -364,24 +437,66 @@ async def create_strategy(body: Dict[str, Any] = Body(...), _user: dict = Depend
         "updated_at": now,
     }
 
-    # Persist to DB
+    # Persist to DB (source of truth for /api/strategies list)
     await database.save_strategy(strategy_row)
 
-    # Register with Nautilus engine (supports sma_crossover and rsi)
-    result = _nautilus().create_strategy({**config, "id": sid, "name": name, "type": strategy_type})
-    # Validate result is a real dict with a string strategy_id (guards against MagicMock in tests)
+    # Always register a lightweight in-memory row so UI/live trading work even when
+    # Nautilus StrategyConfig rejects live crypto symbols (e.g. BTC-USDT).
+    sys = _nautilus()
+    if hasattr(sys, "strategies") and isinstance(sys.strategies, dict):
+        sys.strategies[sid] = {
+            "id": sid,
+            "name": name,
+            "type": strategy_type,
+            "config": config,
+            "status": "stopped",
+            "description": description,
+            "created_at": now,
+        }
+
+    # Best-effort Nautilus engine registration (needed for SIM backtests)
+    engine_cfg = {**config, "id": sid, "name": name, "type": strategy_type}
+    # Keep SIM bar_type when instrument is live crypto so config construction is more likely to succeed
+    inst = str(config.get("instrument_id") or "")
+    if ".SIM" not in inst.upper() and "EUR/USD" not in inst.upper():
+        # Live/crypto strategy: do not require engine registration to succeed
+        result = _nautilus().create_strategy(engine_cfg)
+        if isinstance(result, dict) and result.get("success") and isinstance(result.get("strategy_id"), str):
+            actual_sid = result["strategy_id"]
+            if actual_sid != sid:
+                strategy_row["id"] = actual_sid
+                await database.delete_strategy(sid)
+                await database.save_strategy(strategy_row)
+                if sid in sys.strategies:
+                    sys.strategies[actual_sid] = sys.strategies.pop(sid)
+                    sys.strategies[actual_sid]["id"] = actual_sid
+            # Preserve plain dict config (live_exchange / trade_size) for list + live runner
+            if actual_sid in sys.strategies:
+                sys.strategies[actual_sid]["description"] = description
+                sys.strategies[actual_sid]["status"] = "stopped"
+                sys.strategies[actual_sid]["config"] = config
+            return {"success": True, "strategy_id": actual_sid, "strategy": strategy_row}
+        # Engine create failed — DB + memory row already saved; still success for live use
+        return {
+            "success": True,
+            "strategy_id": sid,
+            "strategy": strategy_row,
+            "engine_registered": False,
+            "engine_message": (result or {}).get("message") if isinstance(result, dict) else None,
+        }
+
+    result = _nautilus().create_strategy(engine_cfg)
     result_sid = result.get("strategy_id") if isinstance(result, dict) else None
     if result_sid and isinstance(result_sid, str) and result.get("success"):
         actual_sid = result_sid
-        # If nautilus assigned a different ID, update DB
         if actual_sid != sid:
             strategy_row["id"] = actual_sid
             await database.delete_strategy(sid)
             await database.save_strategy(strategy_row)
-        sys = _nautilus()
-        if hasattr(sys, "strategies") and isinstance(sys.strategies, dict) and actual_sid in sys.strategies:
+        if actual_sid in sys.strategies:
             sys.strategies[actual_sid]["description"] = description
             sys.strategies[actual_sid]["status"] = "stopped"
+            sys.strategies[actual_sid]["config"] = config
         return {"success": True, "strategy_id": actual_sid, "strategy": strategy_row}
 
     return {"success": True, "strategy_id": sid, "strategy": strategy_row}
