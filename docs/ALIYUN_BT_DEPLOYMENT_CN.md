@@ -284,12 +284,17 @@ docker compose ps
 
 ## 8.1 OKX Demo 纸交易
 
-本仓库已支持 **OKX Demo Trading**（Adapters 页连接后可验证余额、现货下单/撤单、同步持仓）。
+本仓库已支持 **OKX Demo Trading**（Adapters 页连接后可验证余额、现货下单/撤单、同步持仓），以及 **Strategies → OKX Demo 自动交易**。
 
 1. 登录 OKX → **交易 → 模拟交易** → 个人中心 → **模拟盘 API**，创建 Demo API Key（记录 Key / Secret / Passphrase）
 2. 网站 Adapters → **OKX** → ⚙ → 填入三项凭证，勾选 **OKX Demo Trading (paper)**（默认勾选）→ Connect & Save
 3. 连接成功后可在订单/持仓相关页面走 Demo 现货；请求会带 `x-simulated-trading: 1`，**不会动真实资金**
-4. 服务器更新代码后需重建：
+4. **策略自动交易**：Strategies → 创建 SMA / RSI / MACD → **Start OKX Demo**  
+   - 后端轮询 OKX 公共 K 线（默认 `BTC-USDT` / `1m`）  
+   - 按策略信号在 Demo 下市价单（现货仅 long/flat，卖出用于平多）  
+   - 卡片上会显示 position / last signal；订单出现在 Orders 页  
+   - 需先完成步骤 2，否则 Start 会提示未连接 OKX
+5. 服务器更新代码后需重建：
 
 ```bash
 cd /root/nautilus-web
@@ -297,7 +302,7 @@ git pull origin main
 docker compose up -d --build
 ```
 
-注意：Demo Key 与实盘 Key 不互通；若报 `50101` 多为环境/Header 与 Key 类型不匹配。
+注意：Demo Key 与实盘 Key 不互通；若报 `50101` 多为环境/Header 与 Key 类型不匹配。默认下单量 `0.001 BTC`，请确保 Demo 账户有足够 USDT。
 
 ---
 

@@ -20,6 +20,10 @@ def _nautilus():
     """Accessor so tests can patch state.nautilus_system at runtime."""
     return _state.nautilus_system
 
+
+def _live_runner():
+    return _state.live_strategy_runner
+
 router = APIRouter(prefix="/api", tags=["strategies"])
 
 # ── Supported strategy types ──────────────────────────────────────────────────
@@ -80,6 +84,16 @@ class StrategyCreateRequest(BaseModel):
     # MACD params
     signal_period: int = Field(9, ge=1, le=200)
     trade_size: str = "100000"
+
+
+class StrategyStartRequest(BaseModel):
+    """Optional body for POST /strategies/{id}/start."""
+    live: bool = False
+    exchange: str = "okx"
+    instrument: str = "BTC-USDT"
+    quantity: float = Field(0.001, gt=0, le=100)
+    bar: str = "1m"
+    interval_sec: int = Field(60, ge=15, le=3600)
 
 
 def _db_row_to_strategy(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -197,6 +211,11 @@ async def list_strategies():
         if db_pnl != 0.0 or db_trades > 0:
             total_pnl = db_pnl
             total_trades = db_trades
+        live_status = None
+        try:
+            live_status = _live_runner().get_status(strategy["id"])
+        except Exception:
+            live_status = None
         result.append(
             {
                 "id": strategy["id"],
@@ -205,6 +224,7 @@ async def list_strategies():
                 "status": strategy["status"],
                 "description": strategy.get("description", ""),
                 "instrument": instrument,
+                "live": live_status,
                 "performance": {
                     "total_pnl": total_pnl,
                     "total_trades": total_trades,
@@ -304,6 +324,10 @@ async def create_strategy(body: Dict[str, Any] = Body(...), _user: dict = Depend
 async def delete_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
     if not await _strategy_exists(strategy_id):
         raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+    try:
+        await _live_runner().stop(strategy_id)
+    except Exception:
+        pass
     sys = _nautilus()
     if hasattr(sys, "strategies") and isinstance(sys.strategies, dict) and strategy_id in sys.strategies:
         del sys.strategies[strategy_id]
@@ -323,15 +347,81 @@ async def _strategy_exists(strategy_id: str) -> bool:
 
 
 @router.post("/strategies/{strategy_id}/start")
-async def start_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
+async def start_strategy(
+    strategy_id: str,
+    body: Optional[StrategyStartRequest] = Body(default=None),
+    _user: dict = Depends(get_current_user),
+):
     if not await _strategy_exists(strategy_id):
         raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
     _nautilus().start_strategy(strategy_id)
     await database.update_strategy_status(strategy_id, "running")
+
+    live_info = None
+    req = body or StrategyStartRequest()
+    if req.live:
+        # Resolve strategy type + config from memory or DB
+        strategy_type = "sma_crossover"
+        config: Dict[str, Any] = {}
+        sys = _nautilus()
+        if hasattr(sys, "strategies") and isinstance(sys.strategies, dict) and strategy_id in sys.strategies:
+            row = sys.strategies[strategy_id]
+            strategy_type = row.get("type") or strategy_type
+            cfg = row.get("config") or {}
+            if isinstance(cfg, dict):
+                config = cfg
+            elif hasattr(cfg, "__dict__"):
+                config = dict(cfg.__dict__)
+        else:
+            db_rows = await database.list_strategies()
+            match = next((r for r in db_rows if r["id"] == strategy_id), None)
+            if match:
+                strategy_type = match.get("type") or strategy_type
+                try:
+                    config = json.loads(match.get("config") or "{}")
+                except Exception:
+                    config = {}
+
+        instrument = req.instrument
+        # Prefer explicit live instrument; map SIM FX defaults → BTC-USDT for OKX spot
+        cfg_inst = str(config.get("instrument_id") or "")
+        if instrument in ("BTC-USDT", "") and cfg_inst and ".SIM" not in cfg_inst and "/" not in cfg_inst:
+            instrument = cfg_inst.replace("_", "-")
+
+        qty = req.quantity
+        # If trade_size looks like a crypto size (<= 10), use it
+        try:
+            ts = float(config.get("trade_size") or 0)
+            if 0 < ts <= 10:
+                qty = ts
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            live_info = await _live_runner().start(
+                strategy_id=strategy_id,
+                strategy_type=strategy_type,
+                config=config,
+                exchange=req.exchange,
+                instrument=instrument,
+                quantity=qty,
+                bar=req.bar,
+                interval_sec=req.interval_sec,
+            )
+        except Exception as exc:
+            # Roll back status so UI is not stuck on "running"
+            try:
+                _nautilus().stop_strategy(strategy_id)
+            except Exception:
+                pass
+            await database.update_strategy_status(strategy_id, "stopped")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return {
         "success": True,
         "message": f"Strategy {strategy_id} started",
         "live_engine_registered": True,
+        "live": live_info,
     }
 
 
@@ -339,6 +429,10 @@ async def start_strategy(strategy_id: str, _user: dict = Depends(get_current_use
 async def stop_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
     if not await _strategy_exists(strategy_id):
         raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+    try:
+        await _live_runner().stop(strategy_id)
+    except Exception:
+        pass
     _nautilus().stop_strategy(strategy_id)
     await database.update_strategy_status(strategy_id, "stopped")
     return {

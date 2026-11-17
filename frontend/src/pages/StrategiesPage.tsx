@@ -1,6 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import api from '../lib/api';
 
+interface LiveStatus {
+  running?: boolean;
+  exchange?: string;
+  instrument?: string;
+  quantity?: number;
+  bar?: string;
+  position?: string;
+  last_signal?: string | null;
+  last_error?: string | null;
+  last_bar_ts?: string | null;
+  ticks?: number;
+}
+
 interface Strategy {
   id: string;
   name: string;
@@ -8,6 +21,7 @@ interface Strategy {
   status: string;
   description: string;
   config: Record<string, any>;
+  live?: LiveStatus | null;
   performance: {
     total_pnl: number;
     total_trades: number;
@@ -58,6 +72,16 @@ export default function StrategiesPage() {
     fetchStrategies();
     fetchStrategyTypes();
   }, []);
+
+  // Poll while any strategy is live-running so signal/position stay fresh
+  useEffect(() => {
+    const anyLive = strategies.some(s => s.status === 'running' && s.live?.running);
+    if (!anyLive) return;
+    const timer = setInterval(() => {
+      fetchStrategies();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [strategies]);
 
   const fetchStrategyTypes = async () => {
     try {
@@ -125,8 +149,17 @@ export default function StrategiesPage() {
   };
 
   const handleStartStrategy = async (strategyId: string) => {
+    setFetchError(null);
     try {
-      await api.post(`/api/strategies/${strategyId}/start`);
+      // Start OKX Demo paper auto-trading (bars → signals → market orders)
+      await api.post(`/api/strategies/${strategyId}/start`, {
+        live: true,
+        exchange: 'okx',
+        instrument: 'BTC-USDT',
+        quantity: 0.001,
+        bar: '1m',
+        interval_sec: 60,
+      });
       fetchStrategies();
     } catch (error) {
       setFetchError(error instanceof Error ? error.message : 'Failed to start strategy');
@@ -172,7 +205,9 @@ export default function StrategiesPage() {
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-4xl font-bold text-gray-900 mb-2">📈 Strategy Management</h1>
-            <p className="text-gray-600">Manage and monitor your trading strategies</p>
+            <p className="text-gray-600">
+              Start runs OKX Demo paper auto-trading (connect OKX Demo in Adapters first)
+            </p>
           </div>
           <div className="flex gap-4">
             <button
@@ -243,6 +278,23 @@ export default function StrategiesPage() {
                   </div>
                 </div>
 
+                {strategy.live?.running && (
+                  <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
+                    <div className="font-semibold">OKX Demo live</div>
+                    <div>
+                      {strategy.live.instrument || 'BTC-USDT'} · {strategy.live.bar || '1m'} · qty{' '}
+                      {strategy.live.quantity ?? 0.001}
+                    </div>
+                    <div>
+                      position: {strategy.live.position || 'flat'} · signal:{' '}
+                      {strategy.live.last_signal || '—'} · ticks: {strategy.live.ticks ?? 0}
+                    </div>
+                    {strategy.live.last_error && (
+                      <div className="text-red-700">error: {strategy.live.last_error}</div>
+                    )}
+                  </div>
+                )}
+
                 {/* Actions */}
                 <div className="flex gap-2">
                   {strategy.status === 'stopped' ? (
@@ -250,7 +302,7 @@ export default function StrategiesPage() {
                       onClick={() => handleStartStrategy(strategy.id)}
                       className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-all font-semibold text-sm"
                     >
-                      ▶ Start
+                      ▶ Start OKX Demo
                     </button>
                   ) : (
                     <button

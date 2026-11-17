@@ -46,9 +46,15 @@ def reset_rate_limit_counters():
 def reset_live_manager():
     """Reset LiveTradingManager singleton state between tests to prevent leakage."""
     try:
-        from state import live_manager
+        from state import live_manager, live_strategy_runner
         live_manager._connections.clear()
         live_manager._is_active = False
+        # Cancel any leftover live strategy loops
+        for sid in list(getattr(live_strategy_runner, "_tasks", {}).keys()):
+            task = live_strategy_runner._tasks.pop(sid, None)
+            if task and not task.done():
+                task.cancel()
+        live_strategy_runner._states.clear()
     except (ImportError, AttributeError):
         pass
     yield
